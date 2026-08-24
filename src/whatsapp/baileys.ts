@@ -7,6 +7,7 @@ import qrcodeTerminal from 'qrcode-terminal'
 import { handleIncomingMessage } from '../agent/handleMessage.js'
 import { config } from '../config.js'
 import { updateDeliveryStatus } from '../db/conversations.js'
+import { supabase } from '../supabaseClient.js'
 import { importHistoryMessages, linkLidToPhoneNumber, syncChatUnreadCounts, syncContactNames } from '../db/historyImport.js'
 import { runExclusive } from '../utils/runExclusive.js'
 import { backupAuthState, restoreAuthState } from './authStateBackup.js'
@@ -74,6 +75,29 @@ export async function startWhatsApp(): Promise<WASocket> {
     // El nombre que se muestra como "dispositivo vinculado" en el
     // teléfono. Antes quedaba el genérico de la librería.
     browser: ['Agente ERP', 'Chrome', '1.0.0'],
+    // Cuando el teléfono del cliente no puede descifrar un mensaje
+    // nuestro, pide automáticamente que se lo reenviemos. Baileys sólo
+    // puede responder a ese pedido si le damos forma de recuperar el
+    // mensaje original -- sin esto el cliente queda con "Esperando
+    // mensaje. Esto puede tomar tiempo." para siempre. Se midió: de 6
+    // mensajes salientes, 3 quedaron trabados así.
+    getMessage: async (key) => {
+      if (!key.id) return undefined
+      try {
+        const { data } = await supabase
+          .from('agent_messages')
+          .select('body')
+          .eq('whatsapp_message_id', key.id)
+          .maybeSingle()
+        if (!data?.body) return undefined
+        // Todo lo que manda el agente es texto, así que alcanza con
+        // reconstruir el mensaje simple.
+        return { conversation: data.body }
+      } catch (err) {
+        logger.error({ err }, 'No se pudo recuperar el mensaje para reenviarlo')
+        return undefined
+      }
+    },
   })
   currentSocket = sock
 
