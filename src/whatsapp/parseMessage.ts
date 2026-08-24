@@ -99,7 +99,10 @@ export function parseIncomingMessage(msg: WAMessage): ParsedMessage | null {
     return { ...base, contentType: 'contact', body: content.contactMessage?.displayName ?? null }
   }
 
-  // Cualquier otra cosa (reacciones, encuestas, mensajes de sistema...):
-  // se deja constancia de que llegó algo, sin intentar interpretarlo.
-  return { ...base, contentType: 'other', body: null }
+  // Todo lo demás (reacciones, acuses, mensajes de protocolo, claves de
+  // cifrado...) NO se guarda: no tiene contenido que mostrarle a nadie ni
+  // sirve para analizar la conversación. Se midió en vivo: en media hora
+  // metió 147 filas vacías en el chat del propio bot, tapando los
+  // mensajes reales en el ERP.
+  return null
 }
