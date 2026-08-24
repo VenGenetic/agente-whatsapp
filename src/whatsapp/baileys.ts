@@ -229,6 +229,14 @@ export async function startWhatsApp(): Promise<WASocket> {
     // mensajes que nunca se habían guardado. Se procesan los dos; lo que
     // impide que el bot se responda a sí mismo es el chequeo de `fromMe`
     // dentro de handleIncomingMessage, no este filtro.
+    //
+    // Nota: los mensajes que el vendedor escribe desde el TELÉFONO llegan
+    // igual por acá, pero vienen cifrados y sin poder abrirse ("No
+    // session found to decrypt message"): se midió 1 fallo de descifrado
+    // por cada mensaje propio, y todos llegaron con el contenido vacío.
+    // Por eso el equipo responde desde el ERP (ver agent_outbox,
+    // migración 0024): así el texto se conoce antes de cifrarlo y la
+    // conversación queda completa.
     if (event.type !== 'notify' && event.type !== 'append') return
     // Defensa extra contra el mismo problema: si por lo que sea este
     // listener de un socket viejo llega a dispararse, `sock` ya no es el
