@@ -1,6 +1,7 @@
 import type { WASocket } from '@whiskeysockets/baileys'
 import { config } from '../config.js'
 import { collectGapsReportData, formatGapsReportForWhatsApp } from '../db/gapsReport.js'
+import { borrarConversacionesVacias } from '../db/maintenance.js'
 import { supabase } from '../supabaseClient.js'
 import { toWhatsAppJid } from '../utils/phone.js'
 
@@ -36,6 +37,17 @@ export async function runGapsReportJob(sock: WASocket): Promise<void> {
     .maybeSingle()
   if (findError) throw findError
   if (existing) return
+
+  // Mantenimiento diario, aprovechando que este job ya corre una vez al
+  // día: las conversaciones vacías se acumulan solas (ver
+  // borrarConversacionesVacias) y ensucian la bandeja.
+  try {
+    const borradas = await borrarConversacionesVacias()
+    if (borradas > 0) console.log(`Mantenimiento: ${borradas} conversación(es) vacías borradas.`)
+  } catch (err) {
+    // No debe impedir que el resumen salga.
+    console.error('Error en la limpieza de conversaciones vacías:', err)
+  }
 
   const data = await collectGapsReportData()
   const text = formatGapsReportForWhatsApp(data)

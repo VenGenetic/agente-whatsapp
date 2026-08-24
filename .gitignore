@@ -7,7 +7,7 @@ dist/
 # El QR es una credencial: quien lo escanee entra a la sesion de WhatsApp.
 qr-whatsapp.png
 # Respaldos de conversaciones: datos de clientes reales.
-backup-conversaciones-*.json
+backup-*.json
 
 # Estado interno de herramientas, no del proyecto.
 .claude/
