@@ -5,7 +5,7 @@ import { getPendingStockNotifications, getStuckPendingDemands, markDemandNotifie
 import { draftReply } from '../gemini/respond.js'
 import { supabase } from '../supabaseClient.js'
 import { humanDelay } from '../utils/humanDelay.js'
-import { toWhatsAppJid } from '../utils/phone.js'
+import { toChatJid, toWhatsAppJid } from '../utils/phone.js'
 import { roundedCustomerPrice } from '../utils/pricing.js'
 import { sendTextOrPhoto } from '../utils/sendTextOrPhoto.js'
 
@@ -41,6 +41,18 @@ async function notifyDemand(sock: WASocket, demand: PendingNotification, backfil
 
   const conversation = await upsertConversation(demand.phoneNumber, demand.customerName)
 
+  // Dirección REAL del chat, no una reconstruida a partir del teléfono:
+  // para los chats identificados por LID, la reconstruida no existe y
+  // WhatsApp descarta el mensaje sin dar error (ver migración 0022).
+  const { data: datosChat } = await supabase
+    .from('agent_conversations')
+    .select('phone_number, lid, chat_jid')
+    .eq('id', conversation.id)
+    .maybeSingle()
+  const jidDestino =
+    datosChat?.chat_jid ??
+    toChatJid({ phone_number: datosChat?.phone_number ?? demand.phoneNumber, lid: datosChat?.lid ?? null })
+
   const text = await draftReply({
     facts: {
       case: 'in_stock',
@@ -56,7 +68,7 @@ async function notifyDemand(sock: WASocket, demand: PendingNotification, backfil
   })
 
   await humanDelay()
-  const sentId = await sendTextOrPhoto(sock, toWhatsAppJid(demand.phoneNumber), text, product.imageUrl)
+  const sentId = await sendTextOrPhoto(sock, jidDestino, text, product.imageUrl)
 
   await logOutboundMessage(conversation.id, {
     body: text,
@@ -81,12 +93,10 @@ async function notifyDemand(sock: WASocket, demand: PendingNotification, backfil
  * (clientes esperando un aviso que nunca iba a llegar). Es una red de
  * seguridad, no reemplaza el mecanismo normal.
  *
- * Nota: acá reconstruimos el JID desde `product_demands.phone_number`
- * porque este job no tiene el mensaje original a mano (a diferencia de
- * handleMessage.ts, que sí usa el `chatJid` real de WhatsApp). Si ese
- * teléfono vino de un chat identificado por LID en vez de número real, el
- * aviso podría no llegar -- mismo caso límite que se documenta en
- * parseMessage.ts.
+ * La dirección de envío sale de `agent_conversations.chat_jid` (la real
+ * que usa WhatsApp), no de reconstruirla desde el teléfono: para chats
+ * identificados por LID la reconstruida no existe y WhatsApp descarta el
+ * mensaje sin dar error.
  */
 export async function runStockNotificationJob(sock: WASocket): Promise<void> {
   const pending = await getPendingStockNotifications()
