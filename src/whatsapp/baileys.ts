@@ -219,7 +219,17 @@ export async function startWhatsApp(): Promise<WASocket> {
   })
 
   sock.ev.on('messages.upsert', async (event) => {
-    if (event.type !== 'notify') return
+    // 'notify'  = mensaje nuevo que llega de afuera (el cliente).
+    // 'append'  = mensaje que se agrega al chat desde OTRO dispositivo de
+    //             esta misma cuenta -- o sea, lo que el vendedor escribe
+    //             desde su teléfono.
+    //
+    // Descartar 'append' dejaba la conversación a medias en el ERP: se
+    // veía al cliente diciendo "Ok" o "Por favor" respondiendo a
+    // mensajes que nunca se habían guardado. Se procesan los dos; lo que
+    // impide que el bot se responda a sí mismo es el chequeo de `fromMe`
+    // dentro de handleIncomingMessage, no este filtro.
+    if (event.type !== 'notify' && event.type !== 'append') return
     // Defensa extra contra el mismo problema: si por lo que sea este
     // listener de un socket viejo llega a dispararse, `sock` ya no es el
     // socket vigente y no debe procesar nada.
