@@ -1,0 +1,33 @@
+{
+  "name": "whatsapp-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Agente de WhatsApp para repuestos usados de auto, integrado a sistema_erp via Supabase.",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "verify": "tsx scripts/verify-setup.ts",
+    "reset-chat": "tsx scripts/reset-conversation.ts",
+    "gaps-report": "tsx scripts/gaps-report.ts",
+    "limpiar": "tsx scripts/limpiar.ts"
+  },
+  "dependencies": {
+    "@google/genai": "^2.18.0",
+    "@hapi/boom": "^10.0.1",
+    "@supabase/supabase-js": "^2.45.4",
+    "@whiskeysockets/baileys": "^6.7.9",
+    "dotenv": "^16.4.5",
+    "pino": "^9.4.0",
+    "qrcode": "^1.5.4",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.4",
+    "@types/qrcode": "^1.5.6",
+    "@types/qrcode-terminal": "^0.12.2",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2"
+  }
+}
