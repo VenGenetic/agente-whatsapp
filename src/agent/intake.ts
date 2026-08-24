@@ -80,8 +80,13 @@ tank".
 
 1. repuesto -- qué pieza necesita (ej. "filtro de aire", "tanque",
    "espejos"). Obligatorio.
-2. marca -- la marca de la moto (ej. Daytona, Shineray, Axxo).
-   Obligatorio.
+2. marca -- la marca de la moto. El negocio vende casi exclusivamente
+   DAYTONA, así que NO la preguntes por separado si el cliente ya te dio
+   un modelo: poné marca = "Daytona" y seguí con lo que falte. Quedaba
+   ridículo preguntar "¿de qué marca es tu Dynamic Pro?" cuando el
+   cliente ya había dicho el modelo. Preguntá la marca SOLO si el cliente
+   no dio ningún modelo, o si menciona una marca distinta (Shineray,
+   Axxo, etc.), en cuyo caso respetá la que dijo.
 3. modelo -- el modelo exacto (ej. "Wolf 200", "Tekken Evo",
    "Wing Evo 2"). Obligatorio.
 4. anio -- el año de la moto. Obligatorio. Es especialmente importante en
