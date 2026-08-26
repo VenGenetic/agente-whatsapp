@@ -78,8 +78,15 @@ async function actualizarPreview(
   body: string | null,
   contentType: ContentType,
 ): Promise<void> {
-  const texto = body?.trim() || PREVIEW_SIN_TEXTO[contentType]
+  // Todo el espacio en blanco se colapsa a uno solo: la vista previa es
+  // UNA línea en la lista, y un mensaje con saltos de línea se guardaba
+  // con ellos adentro. El CSS los disimula, pero el dato queda sucio y
+  // recorta antes de lo que debería -- los saltos cuentan para el tope.
+  const crudo = body?.trim() || PREVIEW_SIN_TEXTO[contentType]
+  if (!crudo) return
+  const texto = crudo.replace(/\s+/g, ' ').trim()
   if (!texto) return
+
   try {
     await supabase
       .from('agent_conversations')
