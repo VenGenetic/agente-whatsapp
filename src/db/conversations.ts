@@ -46,6 +46,53 @@ export type InboundMessageInput = {
 
 type FilaIdentidad = { id: number; phone_number: string; lid: string | null }
 
+/** Cuánto de la vista previa se guarda. Alcanza para dos líneas en la lista. */
+const LARGO_PREVIEW = 120
+
+/** Qué mostrar de un mensaje que no tiene texto. */
+const PREVIEW_SIN_TEXTO: Partial<Record<ContentType, string>> = {
+  image: '(foto)',
+  audio: '(nota de voz)',
+  video: '(video)',
+  document: '(archivo)',
+  sticker: '(sticker)',
+  location: '(ubicación)',
+  contact: '(contacto)',
+}
+
+/**
+ * Deja en la conversación el texto del último mensaje, para que la lista
+ * del ERP muestre de qué habla cada chat sin abrirlo (migración 0032).
+ *
+ * Se guarda acá en vez de consultarse al armar la lista porque PostgREST
+ * no hace `DISTINCT ON`: sacar el último mensaje de 200 conversaciones
+ * costaría cientos de filas por recarga, que es justo el gasto de cuota
+ * que ya salió caro una vez.
+ *
+ * No lanza: es una comodidad para la lista. Que falle no puede tumbar el
+ * registro del mensaje, que sí es el dato real.
+ */
+async function actualizarPreview(
+  conversationId: number,
+  direction: 'inbound' | 'outbound',
+  body: string | null,
+  contentType: ContentType,
+): Promise<void> {
+  const texto = body?.trim() || PREVIEW_SIN_TEXTO[contentType]
+  if (!texto) return
+  try {
+    await supabase
+      .from('agent_conversations')
+      .update({
+        last_message_preview: texto.slice(0, LARGO_PREVIEW),
+        last_message_direction: direction,
+      })
+      .eq('id', conversationId)
+  } catch {
+    // Ver el comentario de arriba.
+  }
+}
+
 /**
  * Conversación de un chat por LID.
  *
@@ -195,6 +242,7 @@ export async function logInboundMessage(
     3,
     1000,
   )
+  await actualizarPreview(conversationId, 'inbound', message.body, message.contentType)
 }
 
 export type ActionTaken =
@@ -286,6 +334,7 @@ export async function logOutboundMessage(
     3,
     1000,
   )
+  await actualizarPreview(conversationId, 'outbound', message.body, message.contentType ?? 'text')
   return insertedId
 }
 
