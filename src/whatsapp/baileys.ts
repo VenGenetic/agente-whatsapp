@@ -8,9 +8,12 @@ import { handleIncomingMessage } from '../agent/handleMessage.js'
 import { config } from '../config.js'
 import { updateDeliveryStatus } from '../db/conversations.js'
 import { supabase } from '../supabaseClient.js'
-import { importHistoryMessages, linkLidToPhoneNumber, syncChatUnreadCounts, syncContactNames } from '../db/historyImport.js'
+import { importHistoryMessages, syncChatUnreadCounts, syncContactNames } from '../db/historyImport.js'
 import { runExclusive } from '../utils/runExclusive.js'
+import { latirEnSegundoPlano } from '../db/heartbeat.js'
+
 import { backupAuthState, restoreAuthState } from './authStateBackup.js'
+import { puedeEnviar } from './outboundGuard.js'
 import { parseIncomingMessage } from './parseMessage.js'
 
 const AUTH_DIR = path.resolve(config.authStateDir)
@@ -50,13 +53,47 @@ export function getSocket(): WASocket | null {
 
 let backupTimer: NodeJS.Timeout | null = null
 
+/**
+ * La sesión murió (WhatsApp devolvió 401) y estas credenciales ya no
+ * sirven. Deja de respaldar: subirlas al bucket es peor que no tener
+ * respaldo, porque al arrancar `restoreAuthState` las restauraría y el
+ * proceso volvería a la misma sesión muerta sin llegar a mostrar el QR.
+ * Se vio en vivo el 2026-08-26: quedó un `creds.json` a medio vincular en
+ * un bucket que se acababa de vaciar a propósito.
+ */
+let sesionInvalidada = false
+
 function scheduleBackup(): void {
+  if (sesionInvalidada) return
   if (backupTimer) clearTimeout(backupTimer)
   // Debounce: Baileys dispara creds.update varias veces seguidas al conectar;
   // esto colapsa esas ráfagas en un solo respaldo.
   backupTimer = setTimeout(() => {
+    if (sesionInvalidada) return
     backupAuthState(AUTH_DIR).catch((err) => logger.error({ err }, 'No se pudo respaldar el auth-state en Supabase'))
   }, 5000)
+}
+
+/**
+ * Envuelve `sendMessage` para que NINGÚN camino de salida pueda saltarse
+ * el freno (ver outboundGuard.ts). Se aplica al socket recién creado, así
+ * que también cubre los sockets nuevos que aparecen al reconectar.
+ *
+ * Devuelve `undefined` cuando bloquea, que es lo mismo que devuelve
+ * Baileys cuando no llega a mandar: los llamadores ya contemplan ese caso
+ * (guardan `sent?.key?.id ?? null`).
+ */
+function instalarFrenoDeSalida(sock: WASocket): void {
+  const enviarOriginal = sock.sendMessage.bind(sock)
+
+  sock.sendMessage = (async (jid: string, contenido: unknown, opciones?: unknown) => {
+    const decision = puedeEnviar(jid)
+    if (!decision.permitido) {
+      console.warn(`[freno] Mensaje NO enviado a ${jid} -- ${decision.razon}`)
+      return undefined
+    }
+    return enviarOriginal(jid, contenido as never, opciones as never)
+  }) as WASocket['sendMessage']
 }
 
 export async function startWhatsApp(): Promise<WASocket> {
@@ -75,6 +112,16 @@ export async function startWhatsApp(): Promise<WASocket> {
     // El nombre que se muestra como "dispositivo vinculado" en el
     // teléfono. Antes quedaba el genérico de la librería.
     browser: ['Agente ERP', 'Chrome', '1.0.0'],
+    // Los estados que publican los contactos (`status@broadcast`) y los
+    // grupos no son parte de este negocio: `parseMessage` ya los
+    // descartaba, pero recién DESPUÉS de que Baileys intentara
+    // descifrarlos -- y como son mensajes de grupo cifrados para otra
+    // sesión, cada uno dejaba dos errores de nivel 50 en el log ("No
+    // session found to decrypt message" + "transaction failed, rolling
+    // back"). Eso no rompía nada, pero enterraba los errores de verdad
+    // entre decenas de fallos inofensivos. Descartándolos acá ni se
+    // intenta descifrarlos.
+    shouldIgnoreJid: (jid: string) => jid === 'status@broadcast' || jid.endsWith('@g.us'),
     // Cuando el teléfono del cliente no puede descifrar un mensaje
     // nuestro, pide automáticamente que se lo reenviemos. Baileys sólo
     // puede responder a ese pedido si le damos forma de recuperar el
@@ -99,6 +146,7 @@ export async function startWhatsApp(): Promise<WASocket> {
       }
     },
   })
+  instalarFrenoDeSalida(sock)
   currentSocket = sock
 
   sock.ev.on('creds.update', async () => {
@@ -129,16 +177,45 @@ export async function startWhatsApp(): Promise<WASocket> {
 
       if (loggedOut) {
         currentSocket = null
+        // Antes que nada: que no se respalden estas credenciales muertas.
+        // El timer del último `creds.update` puede estar todavía en vuelo.
+        sesionInvalidada = true
+        if (backupTimer) clearTimeout(backupTimer)
+        latirEnSegundoPlano('disconnected')
         console.error(
-          'La sesión fue cerrada desde el teléfono. Borrá la carpeta de auth-state ' +
-            `(${AUTH_DIR}) y el contenido del bucket "${config.authBackupBucket}", y reiniciá para volver a escanear el QR.`,
+          'WhatsApp rechazó la sesión (401). Para volver a vincular: parar el proceso, ' +
+            `vaciar la carpeta de auth-state (${AUTH_DIR}) y el bucket "${config.authBackupBucket}" ` +
+            '(npx tsx scripts/_tmp-vaciar-bucket.ts), y arrancar de nuevo.',
         )
         return
       }
 
-      const delay = Math.min(RECONNECT_BASE_DELAY_MS * 2 ** reconnectAttempts, RECONNECT_MAX_DELAY_MS)
-      reconnectAttempts += 1
-      console.warn(`Conexión cerrada (código ${statusCode ?? 'desconocido'}). Reconectando en ${delay}ms...`)
+      // 515 no es una caída: es lo que WhatsApp manda SIEMPRE justo
+      // después de escanear el QR, para exigir que se reinicie el stream y
+      // así terminar de vincular. Hay que volver a conectar YA.
+      //
+      // Pasarlo por el backoff exponencial rompía la vinculación: con los
+      // reintentos acumulados de los QR vencidos, la espera había llegado a
+      // 60s, WhatsApp descartaba el emparejamiento a medias y la siguiente
+      // conexión volvía con 401 -- que este mismo código reporta como "la
+      // sesión fue cerrada desde el teléfono", un mensaje que manda a
+      // borrar el auth-state y reintentar, cayendo justo en el mismo pozo.
+      // Se vio en vivo el 2026-08-26.
+      const esReinicioDeVinculacion = statusCode === DisconnectReason.restartRequired
+
+      latirEnSegundoPlano('connecting')
+      const delay = esReinicioDeVinculacion
+        ? 0
+        : Math.min(RECONNECT_BASE_DELAY_MS * 2 ** reconnectAttempts, RECONNECT_MAX_DELAY_MS)
+      // Un 515 tampoco cuenta como intento fallido: si sumara, la próxima
+      // caída real arrancaría el backoff más arriba de lo que corresponde.
+      if (!esReinicioDeVinculacion) reconnectAttempts += 1
+
+      console.warn(
+        esReinicioDeVinculacion
+          ? 'Vinculación aceptada: WhatsApp pide reiniciar la conexión (515). Reconectando ya...'
+          : `Conexión cerrada (código ${statusCode ?? 'desconocido'}). Reconectando en ${delay}ms...`,
+      )
       // Sin esto, el socket viejo puede quedar con su listener de
       // 'messages.upsert' todavía activo -- si WhatsApp llega a entregarle
       // algo antes de que termine de morir, el mensaje se procesa DOS
@@ -151,6 +228,9 @@ export async function startWhatsApp(): Promise<WASocket> {
       }, delay)
     } else if (connection === 'open') {
       reconnectAttempts = 0
+      // El ERP lo lee para avisar si lo que se encola va a salir o no
+      // (ver db/heartbeat.ts).
+      latirEnSegundoPlano('connected')
       console.log('Conectado a WhatsApp.')
     }
   })
@@ -221,16 +301,10 @@ export async function startWhatsApp(): Promise<WASocket> {
   sock.ev.on('contacts.upsert', handleContacts)
   sock.ev.on('contacts.update', handleContacts)
 
-  // WhatsApp comparte el teléfono real detrás de un LID -- es lo que
-  // convierte una conversación identificada con un id interno en una con
-  // el número del cliente a la vista en el ERP.
-  sock.ev.on('chats.phoneNumberShare', async ({ lid, jid }) => {
-    try {
-      await linkLidToPhoneNumber(lid, jid)
-    } catch (err) {
-      logger.error({ err }, 'Error asociando LID a número de teléfono')
-    }
-  })
+  // En Baileys 7 ya no existe el evento `chats.phoneNumberShare`: el
+  // teléfono real detrás de un LID llega directamente en cada mensaje
+  // (`key.remoteJidAlt`, ver parseMessage.ts), así que la asociación se
+  // hace ahí y no hace falta un listener aparte.
 
   // Cambios de estado de chat en vivo (marcar leído/no leído desde el
   // teléfono) -- mantiene el ERP en sintonía con lo que ve el vendedor.

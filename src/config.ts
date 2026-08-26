@@ -35,6 +35,22 @@ export const config = {
   // agente vive en la base (`agent_settings`) y se maneja desde el ERP;
   // esto solo existe para poder cortar todo de raíz sin depender del ERP.
   botKillSwitch: process.env.BOT_KILL_SWITCH === 'true',
+  // A quién puede escribirle el agente. Se aplica en el socket mismo, así
+  // que cubre TODOS los caminos de salida -- no solo las respuestas
+  // automáticas (ver whatsapp/outboundGuard.ts).
+  //
+  //   blocked  -> ningún cliente recibe nada (solo avisos al dueño).
+  //   erp_only -> los clientes solo reciben lo que una persona escribe
+  //               a mano desde el ERP; el agente no contesta solo.
+  //   full     -> el agente trabaja normal.
+  //
+  // El default es `blocked` A PROPÓSITO: si la variable falta o está mal
+  // escrita, el sistema se queda callado en vez de escribirle a clientes
+  // reales. Un default permisivo acá manda mensajes que no se pueden
+  // deshacer.
+  outboundMode: (['blocked', 'erp_only', 'full'] as const).includes(process.env.OUTBOUND_MODE as never)
+    ? (process.env.OUTBOUND_MODE as 'blocked' | 'erp_only' | 'full')
+    : 'blocked',
   // 'intake': el bot SOLO le saca datos al cliente (repuesto, marca,
   // modelo, año, color si aplica) y pasa la conversación a un humano --
   // nunca consulta el catálogo ni dice precio/stock/fotos.
@@ -50,5 +66,23 @@ export const config = {
   proactiveIntakeBatchSize: Number(process.env.PROACTIVE_INTAKE_BATCH_SIZE ?? '1'),
   authStateDir: process.env.AUTH_STATE_DIR ?? './auth_state',
   authBackupBucket: process.env.AUTH_BACKUP_BUCKET ?? 'agent_whatsapp_session',
+  // Bucket PÚBLICO con la media del chat: la foto que manda el cliente y
+  // lo que el equipo adjunta desde el ERP. Público porque WhatsApp
+  // descarga el archivo por URL cuando lo enviamos (ver migración 0026).
+  chatMediaBucket: process.env.CHAT_MEDIA_BUCKET ?? 'agent_chat_media',
+  // Guardar en Storage la media que entra. Se puede apagar
+  // (CHAT_MEDIA_CAPTURE=false) si el bucket se llena: el mensaje se sigue
+  // registrando, solo que sin la foto.
+  chatMediaCaptureEnabled: process.env.CHAT_MEDIA_CAPTURE !== 'false',
+  // Tope por archivo, POR TIPO. Se midió el consumo real: las fotos pesan
+  // 124 KB de media y los audios 27 KB, pero un video promedia 3,9 MB --
+  // siendo el 3% de los archivos, los videos son el 57% del crecimiento
+  // del Storage. Y en repuestos el pedido llega como foto de la pieza o
+  // como nota de voz, casi nunca como video.
+  //
+  // Por eso el video tiene su propio tope, mucho más bajo: el mensaje se
+  // registra igual, solo que sin el archivo.
+  chatMediaMaxMb: Number(process.env.CHAT_MEDIA_MAX_MB ?? '8'),
+  chatMediaMaxVideoMb: Number(process.env.CHAT_MEDIA_MAX_VIDEO_MB ?? '3'),
   baileysLogLevel: process.env.BAILEYS_LOG_LEVEL ?? 'warn',
 }

@@ -99,6 +99,12 @@ async function notifyDemand(sock: WASocket, demand: PendingNotification, backfil
  * mensaje sin dar error.
  */
 export async function runStockNotificationJob(sock: WASocket): Promise<void> {
+  // Avisar "llegó tu repuesto" es escribirle a un cliente sin que lo
+  // pida. Se corta antes de consultar la base para no marcar demandas
+  // como notificadas cuando el aviso no salió: si se marcaran, el cliente
+  // no recibiría el aviso nunca más al reactivar el agente.
+  if (config.outboundMode !== 'full') return
+
   const pending = await getPendingStockNotifications()
   for (const demand of pending) {
     try {

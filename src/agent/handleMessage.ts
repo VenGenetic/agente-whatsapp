@@ -2,6 +2,7 @@ import type { WAMessage, WASocket } from '@whiskeysockets/baileys'
 import { config } from '../config.js'
 import {
   type ActionTaken,
+  getConversationState,
   getRecentHistory,
   lastReplyWasClarification,
   logInboundMessage,
@@ -15,6 +16,7 @@ import { isBotAutoReplyEnabled } from '../db/settings.js'
 import { createEscalation, type EscalationReason } from '../db/escalations.js'
 import { interpretMessage, type InterpretedItem, type InterpretResult } from '../gemini/interpret.js'
 import { formatIntakeSummary, runIntake } from './intake.js'
+import { encolarParaProcesar, mediaDeLaRafaga, textoDeLaRafaga, type MensajeEnRafaga } from './messageBuffer.js'
 import { draftReply } from '../gemini/respond.js'
 import {
   applyModelDefault,
@@ -31,6 +33,7 @@ import { toWhatsAppJid } from '../utils/phone.js'
 import { roundedCustomerPrice } from '../utils/pricing.js'
 import { sendTextOrPhoto } from '../utils/sendTextOrPhoto.js'
 import { withTimeout } from '../utils/withTimeout.js'
+import { capturarMediaEnSegundoPlano } from '../whatsapp/inboundMedia.js'
 import { downloadMediaAsBase64 } from '../whatsapp/media.js'
 import { parseIncomingMessage } from '../whatsapp/parseMessage.js'
 
@@ -517,30 +520,41 @@ async function processMessage(
   conversation: { id: number; status: string },
   parsed: NonNullable<ReturnType<typeof parseIncomingMessage>>,
   msg: WAMessage,
+  /**
+   * La ráfaga completa: todos los mensajes que el cliente mandó seguidos
+   * (ver messageBuffer.ts). `parsed` y `msg` son el último, que es el que
+   * define a qué chat se contesta.
+   */
+  rafaga: MensajeEnRafaga[],
 ): Promise<void> {
+  // La foto o la nota de voz puede haber venido en CUALQUIER mensaje de la
+  // ráfaga, no necesariamente en el último: es común mandar la foto y
+  // después escribir "¿tienen este?".
+  const conMedia = mediaDeLaRafaga(rafaga)
   let media: { base64: string; mimeType: string } | null = null
-  if (parsed.contentType === 'image' || parsed.contentType === 'audio') {
-    media = await downloadMediaAsBase64(sock, msg)
+  if (conMedia) {
+    media = await downloadMediaAsBase64(sock, conMedia.msg)
   }
+  const tipoDeMedia = conMedia?.parsed.contentType
 
   const history = await getRecentHistory(conversation.id, 10)
 
+  // Todo lo que dijo el cliente en la ráfaga, junto. Antes se usaba solo
+  // el último mensaje, y por eso el bot preguntaba cosas que el cliente ya
+  // había contestado dos mensajes antes.
+  const customerMessage = textoDeLaRafaga(rafaga)
+
   if (config.agentMode === 'intake') {
-    const customerMessage =
-      parsed.body ?? (parsed.contentType === 'image' ? '(foto)' : parsed.contentType === 'audio' ? '(nota de voz)' : '')
     await processIntakeMessage(sock, conversation, parsed, customerMessage, history, media)
     return
   }
 
   const interpretation = await interpretMessage({
-    text: parsed.body,
-    image: parsed.contentType === 'image' && media ? media : undefined,
-    audio: parsed.contentType === 'audio' && media ? media : undefined,
+    text: customerMessage || null,
+    image: tipoDeMedia === 'image' && media ? media : undefined,
+    audio: tipoDeMedia === 'audio' && media ? media : undefined,
     history,
   })
-
-  const customerMessage =
-    parsed.body ?? (parsed.contentType === 'image' ? '(foto)' : parsed.contentType === 'audio' ? '(nota de voz)' : '')
 
   // Si el mensaje mezcla una pregunta del negocio con otra cosa (ej. un
   // pedido de producto), esa otra cosa sigue su curso normal más abajo --
@@ -659,6 +673,14 @@ export async function handleIncomingMessage(sock: WASocket, msg: WAMessage): Pro
       whatsappMessageId: parsed.whatsappMessageId,
       sentAt: parsed.sentAt,
     })
+    // La foto que el vendedor mandó desde el teléfono también se guarda:
+    // si no, el hilo del ERP muestra "(foto)" y nadie sabe qué se le
+    // mandó al cliente.
+    capturarMediaEnSegundoPlano(sock, msg, {
+      conversationId: ownConversation.id,
+      whatsappMessageId: parsed.whatsappMessageId,
+      contentType: parsed.contentType,
+    })
     return
   }
 
@@ -670,6 +692,16 @@ export async function handleIncomingMessage(sock: WASocket, msg: WAMessage): Pro
     sentAt: parsed.sentAt,
   })
 
+  // La media se copia SIEMPRE, incluso si el bot no va a contestar esta
+  // conversación: WhatsApp no la vuelve a entregar más tarde, así que si
+  // no se guarda ahora se pierde para siempre. Va en segundo plano para
+  // no demorarle la respuesta al cliente.
+  capturarMediaEnSegundoPlano(sock, msg, {
+    conversationId: conversation.id,
+    whatsappMessageId: msg.key.id ?? null,
+    contentType: parsed.contentType,
+  })
+
   // Si ya está escalada o un humano tomó el hilo, el bot no contesta solo --
   // solo queda el log de arriba para que el humano tenga el contexto.
   if (conversation.status === 'escalated' || conversation.status === 'human_active') return
@@ -679,6 +711,12 @@ export async function handleIncomingMessage(sock: WASocket, msg: WAMessage): Pro
   // cortar de raíz si algo se descontrola; el manejo del día a día va por
   // el interruptor del ERP, no por acá.
   if (config.botKillSwitch) return
+
+  // Con la salida frenada, el socket bloquearía igual la respuesta (ver
+  // outboundGuard.ts), pero seguir adelante gastaría una llamada a Gemini
+  // por mensaje y dejaría en la base un saliente que nunca salió. Se
+  // corta acá: el mensaje del cliente queda registrado igual (arriba).
+  if (config.outboundMode !== 'full') return
 
   // Interruptor MAESTRO (global), controlado desde el ERP -- ver
   // agent_settings (migración 0018). Registra el mensaje igual (arriba),
@@ -692,15 +730,37 @@ export async function handleIncomingMessage(sock: WASocket, msg: WAMessage): Pro
   // lo habilite.
   if (!conversation.botEnabled) return
 
-  try {
-    await withTimeout(processMessage(sock, conversation, parsed, msg), PROCESS_MESSAGE_TIMEOUT_MS, 'processMessage')
-  } catch (err) {
-    await handleProcessingFailure(sock, conversation.id, parsed.phoneNumber, parsed.chatJid).catch((fallbackErr) => {
-      // Si hasta el fallback falla (ej. el envío por WhatsApp también está
-      // colgado), al menos que quede visible en el log -- si no, esta
-      // conversación queda sin ninguna traza de que algo salió mal.
-      console.error('El fallback de falla técnica también falló:', fallbackErr)
-    })
-    throw err
-  }
+  // No se contesta este mensaje suelto: se espera a que el cliente termine
+  // de escribir y se procesa la ráfaga entera de una (ver messageBuffer.ts).
+  // La gente manda "buenas tardes, moto tuko cr3 max 200" y "busco rin
+  // trasero" como dos mensajes, y contestar el primero sin haber leído el
+  // segundo es preguntarle algo que ya dijo.
+  encolarParaProcesar(conversation.id, { parsed, msg }, async (mensajes) => {
+    // El estado pudo cambiar mientras se esperaba: alguien del equipo pudo
+    // tomar la conversación o apagarle el agente justo en esos segundos.
+    // Vuelve a mirarlo antes de contestar en vez de usar lo que se leyó al
+    // llegar el primer mensaje.
+    const actual = await getConversationState(conversation.id)
+    if (!actual || !actual.botEnabled) return
+    if (actual.status === 'escalated' || actual.status === 'human_active') return
+
+    const ultimo = mensajes[mensajes.length - 1]
+    try {
+      await withTimeout(
+        processMessage(sock, { id: conversation.id, status: actual.status }, ultimo.parsed, ultimo.msg, mensajes),
+        PROCESS_MESSAGE_TIMEOUT_MS,
+        'processMessage',
+      )
+    } catch (err) {
+      await handleProcessingFailure(sock, conversation.id, ultimo.parsed.phoneNumber, ultimo.parsed.chatJid).catch(
+        (fallbackErr) => {
+          // Si hasta el fallback falla (ej. el envío por WhatsApp también
+          // está colgado), al menos que quede visible en el log -- si no,
+          // esta conversación queda sin ninguna traza de que algo salió mal.
+          console.error('El fallback de falla técnica también falló:', fallbackErr)
+        },
+      )
+      throw err
+    }
+  })
 }

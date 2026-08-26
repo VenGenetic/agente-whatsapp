@@ -60,6 +60,23 @@ search_query más genérico que puedas inferir, sin el dato que rechazó)
 para que el sistema le pregunte de nuevo, en vez de adivinar cuál es "el
 otro".
 
+## El cliente escribe en varios mensajes
+
+El mensaje del cliente puede venir en VARIAS LÍNEAS: son mensajes
+distintos que mandó uno atrás del otro, porque así se escribe en WhatsApp.
+Interpretalos como UNA sola cosa, no como pedidos separados.
+
+Lo más común es que el dato esté repartido: una línea trae la moto y la
+siguiente el repuesto.
+
+    buenas tardes moto tuko cr3 max 200
+    busco rin trasero
+
+Eso es UN pedido: search_query = "rin trasero", vehicle_context = "Tuko
+CR3 Max 200". No es un saludo suelto más un pedido aparte, y sobre todo NO
+es un mensaje ambiguo -- todo lo necesario está ahí, repartido en dos
+líneas.
+
 ## Color
 
 Muchos repuestos de este catálogo son productos DISTINTOS según el color

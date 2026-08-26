@@ -29,6 +29,12 @@ export type InboundMessageInput = {
   body: string | null
   whatsappMessageId: string | null
   /**
+   * Copia de la foto/audio/archivo en Supabase Storage. Se llena aparte,
+   * después de insertar la fila (ver whatsapp/inboundMedia.ts): la
+   * descarga tarda y el registro del mensaje no debe esperarla.
+   */
+  mediaUrl?: string | null
+  /**
    * Cuándo se mandó el mensaje según WhatsApp. Sin esto la fila queda con
    * la hora de INSERCIÓN, que no es lo mismo: al reconectar, WhatsApp
    * reentrega mensajes de rato antes y todos quedarían fechados en el
@@ -36,6 +42,39 @@ export type InboundMessageInput = {
    * conversación.
    */
   sentAt?: Date | null
+}
+
+type FilaIdentidad = { id: number; phone_number: string; lid: string | null }
+
+/**
+ * Conversación de un chat por LID.
+ *
+ * Busca por la columna `lid` y también por `phone_number = lid`: las filas
+ * viejas guardaron los dígitos del LID en la columna del teléfono (era el
+ * único identificador disponible cuando WhatsApp no compartía el número),
+ * y siguen siendo la conversación buena de ese chat.
+ */
+async function buscarPorLid(lid: string): Promise<FilaIdentidad | null> {
+  const { data, error } = await supabase
+    .from('agent_conversations')
+    .select('id, phone_number, lid')
+    .or(`lid.eq.${lid},phone_number.eq.${lid}`)
+    // La más vieja es la que tiene el historial: si por un duplicado
+    // previo hubiera dos, se sigue usando esa y no se parte más el hilo.
+    .order('id', { ascending: true })
+    .limit(1)
+  if (error) throw error
+  return data?.[0] ?? null
+}
+
+async function buscarPorTelefono(phoneNumber: string): Promise<FilaIdentidad | null> {
+  const { data, error } = await supabase
+    .from('agent_conversations')
+    .select('id, phone_number, lid')
+    .eq('phone_number', phoneNumber)
+    .maybeSingle()
+  if (error) throw error
+  return data ?? null
 }
 
 /**
@@ -55,6 +94,60 @@ export async function upsertConversation(
   chatJid: string | null = null,
 ): Promise<ConversationRow> {
   const now = new Date().toISOString()
+
+  // En un chat por LID, el TELÉFONO no sirve como identidad: WhatsApp lo
+  // manda solo en algunos mensajes (`remoteJidAlt`) y nunca en los
+  // propios, así que un mismo chat entraba unas veces por el número y
+  // otras por los dígitos del LID -- dos filas para el mismo cliente. El
+  // LID sí viene en todos. Por eso, cuando hay LID, manda el LID.
+  if (lid) {
+    const existente = await buscarPorLid(lid)
+    if (existente) {
+      const cambios: Record<string, unknown> = { last_message_at: now, updated_at: now }
+      if (customerName) cambios.customer_name = customerName
+      if (chatJid) cambios.chat_jid = chatJid
+      if (existente.lid !== lid) cambios.lid = lid
+
+      // Recién ahora sabemos el teléfono real de un chat que se había
+      // guardado con el LID en esa columna: se completa. Si otra fila ya
+      // lo tiene, hay un duplicado viejo -- no se toca (chocaría con el
+      // índice único) y se avisa para poder unificarlo.
+      if (phoneNumber !== lid && existente.phone_number !== phoneNumber) {
+        const otro = await buscarPorTelefono(phoneNumber)
+        if (!otro) cambios.phone_number = phoneNumber
+        else if (otro.id !== existente.id) {
+          // Este mensaje es la ÚNICA fuente que sabe que este LID y este
+          // teléfono son la misma persona: WhatsApp lo manda en
+          // `remoteJidAlt` y no queda en ningún lado más. Si solo
+          // avisáramos por consola, el dato se pierde al cerrar la
+          // terminal y las dos filas quedan sin nada que las relacione --
+          // pasó con un chat que WhatsApp migró de teléfono a LID
+          // (`@s.whatsapp.net` -> `@lid`), donde ninguna columna las unía.
+          //
+          // Anotarlo en la fila del teléfono deja el par visible para
+          // `npm run unificar-chats`, que es quien fusiona de verdad
+          // (fusionar acá, en el camino de cada mensaje, arriesgaría
+          // perder el mensaje que estamos guardando).
+          if (otro.lid !== lid) {
+            await supabase.from('agent_conversations').update({ lid }).eq('id', otro.id)
+          }
+          console.warn(
+            `Chat duplicado: conv ${existente.id} (LID ${lid}) y conv ${otro.id} (tel ${phoneNumber}) ` +
+              'son el mismo cliente. Unificalos con: npm run unificar-chats',
+          )
+        }
+      }
+
+      const { data, error } = await supabase
+        .from('agent_conversations')
+        .update(cambios)
+        .eq('id', existente.id)
+        .select('id, status, bot_enabled')
+        .single()
+      if (error) throw error
+      return { id: data.id, status: data.status, botEnabled: Boolean(data.bot_enabled) }
+    }
+  }
 
   const { data, error } = await supabase
     .from('agent_conversations')
@@ -90,6 +183,7 @@ export async function logInboundMessage(
         content_type: message.contentType,
         body: message.body,
         whatsapp_message_id: message.whatsappMessageId,
+        ...(message.mediaUrl ? { media_url: message.mediaUrl } : {}),
         ...(message.sentAt ? { created_at: message.sentAt.toISOString() } : {}),
       })
 
@@ -129,34 +223,70 @@ export type OutboundMessageInput = {
   whatsappMessageId?: string | null
   /** Ver InboundMessageInput.sentAt -- misma razón. */
   sentAt?: Date | null
+  /**
+   * URL pública de la foto/archivo que se mandó (bucket agent_chat_media,
+   * o la del propio catálogo si salió de ahí). Es lo que deja al ERP
+   * mostrar en el hilo lo mismo que recibió el cliente.
+   */
+  mediaUrl?: string | null
+  /**
+   * Seguir el acuse de recibo de WhatsApp para este mensaje.
+   *
+   * Por defecto se sigue todo lo que manda el agente, y NO lo marcado como
+   * `human_reply` -- esos eran los mensajes escritos desde el teléfono del
+   * vendedor, que ya salieron por su cuenta y no tenemos nada que
+   * confirmar. Pero los que se escriben desde el ERP también son
+   * `human_reply` y los enviamos NOSOTROS: ahí el acuse sí existe, y es
+   * justo el dato que quiere ver quien escribió ("¿lo leyó?").
+   */
+  trackDelivery?: boolean
 }
 
-export async function logOutboundMessage(conversationId: number, message: OutboundMessageInput): Promise<void> {
+/**
+ * Devuelve el id de la fila insertada, o null si el mensaje ya estaba
+ * guardado (el eco de WhatsApp choca contra el índice único). La cola de
+ * salida usa ese id para enlazar lo que encoló el ERP con el mensaje
+ * real y no mostrarlo dos veces en el hilo.
+ */
+export async function logOutboundMessage(
+  conversationId: number,
+  message: OutboundMessageInput,
+): Promise<number | null> {
+  let insertedId: number | null = null
   await withRetry(
     async () => {
-      const { error } = await supabase.from('agent_messages').insert({
-        conversation_id: conversationId,
-        direction: 'outbound',
-        content_type: message.contentType ?? 'text',
-        body: message.body,
-        product_id: message.productId ?? null,
-        match_confidence: message.matchConfidence ?? null,
-        action_taken: message.actionTaken,
-        whatsapp_message_id: message.whatsappMessageId ?? null,
-        ...(message.sentAt ? { created_at: message.sentAt.toISOString() } : {}),
-        // Arranca en 'pending': hasta que WhatsApp confirme, NO se puede
-        // decir que el cliente lo recibió. Los mensajes del vendedor
-        // (human_reply) ya salieron de su teléfono, no hay nada que
-        // confirmar de nuestro lado.
-        ...(message.actionTaken === 'human_reply' ? {} : { delivery_status: 'pending' }),
-      })
+      const { data, error } = await supabase
+        .from('agent_messages')
+        .insert({
+          conversation_id: conversationId,
+          direction: 'outbound',
+          content_type: message.contentType ?? 'text',
+          body: message.body,
+          product_id: message.productId ?? null,
+          match_confidence: message.matchConfidence ?? null,
+          action_taken: message.actionTaken,
+          whatsapp_message_id: message.whatsappMessageId ?? null,
+          ...(message.mediaUrl ? { media_url: message.mediaUrl } : {}),
+          ...(message.sentAt ? { created_at: message.sentAt.toISOString() } : {}),
+          // Arranca en 'pending': hasta que WhatsApp confirme, NO se puede
+          // decir que el cliente lo recibió. Ver `trackDelivery`.
+          ...((message.trackDelivery ?? message.actionTaken !== 'human_reply')
+            ? { delivery_status: 'pending' }
+            : {}),
+        })
+        .select('id')
+        // `maybeSingle` y no `single`: cuando el insert choca con el eco ya
+        // guardado no vuelve ninguna fila, y `single` lo trataría como error.
+        .maybeSingle()
 
       // Duplicado por el eco de WhatsApp: no es un error, ya está registrado.
       if (error && error.code !== '23505') throw error
+      insertedId = data?.id ?? null
     },
     3,
     1000,
   )
+  return insertedId
 }
 
 /**
@@ -250,6 +380,27 @@ export async function lastReplyWasClarification(conversationId: number): Promise
 
   if (error) throw error
   return data?.action_taken === 'asked_clarification'
+}
+
+/**
+ * Estado actual de la conversación, releído de la base.
+ *
+ * Hace falta porque entre que llega un mensaje y se contesta pasan unos
+ * segundos (se espera a que el cliente termine de escribir, ver
+ * `agent/messageBuffer.ts`), y en ese rato alguien del equipo puede haber
+ * tomado el chat o apagado el agente para ese cliente. Contestar con el
+ * estado que se leyó al principio sería escribir por encima de una persona
+ * que ya está atendiendo.
+ */
+export async function getConversationState(conversationId: number): Promise<ConversationRow | null> {
+  const { data, error } = await supabase
+    .from('agent_conversations')
+    .select('id, status, bot_enabled')
+    .eq('id', conversationId)
+    .maybeSingle()
+  if (error) throw error
+  if (!data) return null
+  return { id: data.id, status: data.status, botEnabled: Boolean(data.bot_enabled) }
 }
 
 export async function setConversationStatus(

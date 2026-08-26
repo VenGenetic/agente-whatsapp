@@ -989,3 +989,48 @@ aclaración genérica) en vez de adivinar.
    que el bot arme un borrador estructurado (cantidad, dirección) para que un
    humano lo convierta en pedido con un clic, eso es una tabla chica aparte
    — lo dejo fuera de este alcance hasta que confirmes.
+
+---
+
+## Ráfagas: leer todo lo que el cliente escribió antes de contestar
+
+**El fallo, en una conversación real (agosto 2026):**
+
+```
+CLIENTE  Buenas tardes moto tuko cr3 max 200
+CLIENTE  busco rin trasero
+BOT      ¿Qué repuesto estás buscando para tu Tuko CR3 Max 200?
+BOT      ¿De qué año es tu moto?
+```
+
+El cliente ya había dicho qué quería. Pero la gente escribe en varios
+mensajes cortos, y cada uno disparaba su propio `handleIncomingMessage`: el
+bot contestó el primero sin haber leído el segundo, y encima mandó dos
+preguntas seguidas. Se nota en los números: **12 de 13** respuestas del bot
+fueron `asked_clarification`.
+
+**El arreglo** (`src/agent/messageBuffer.ts`): los mensajes se juntan por
+conversación y se procesan todos juntos cuando el cliente deja de escribir
+(7s de silencio, con tope de 25s desde el primero, para que alguien que
+escribe sin parar igual reciba respuesta).
+
+Lo que NO se demora es el **registro**: el mensaje se guarda apenas llega,
+así que el ERP lo muestra en vivo. Lo único que espera es la respuesta
+automática.
+
+Tres consecuencias en el código:
+
+- El texto que llega al intérprete viene con **saltos de línea**, uno por
+  mensaje. Se juntan así y no con espacios: pegarlos como una frase corrida
+  le hace perder al modelo dónde termina uno y empieza el otro. Los dos
+  prompts (intérprete y recepción) lo explican con este mismo ejemplo.
+- La foto o la nota de voz puede venir en **cualquier** mensaje de la
+  ráfaga, no en el último — es común mandar la foto y después escribir
+  "¿tienen este?". Con dos fotos gana la última: la segunda suele corregir a
+  la primera.
+- El estado de la conversación se **relee** antes de contestar: en esos
+  segundos alguien del equipo pudo tomar el chat o apagarle el agente, y
+  contestar con el estado viejo sería escribir por encima de una persona
+  que ya está atendiendo.
+
+Cubierto por `npm run verificar-rafagas`, que no toca WhatsApp ni la base.

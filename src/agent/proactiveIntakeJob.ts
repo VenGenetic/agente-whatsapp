@@ -51,6 +51,14 @@ async function getPendingIntakes(limit: number): Promise<PendingIntake[]> {
  * cliente ya había escrito, pero el ritmo lento se mantiene igual.
  */
 export async function runProactiveIntakeJob(sock: WASocket): Promise<void> {
+  // Este job es el único que le escribe a un cliente SIN que el cliente
+  // haya escrito primero, así que es el primero que hay que frenar. Con
+  // la salida bloqueada ni siquiera se consulta la base: además de no
+  // mandar nada, no marca `intake_started_at`, así que cuando se
+  // reactive el agente estos chats siguen en la cola en vez de haber
+  // quedado "arrancados" sin que el cliente recibiera nunca el saludo.
+  if (config.outboundMode !== 'full') return
+
   const pending = await getPendingIntakes(config.proactiveIntakeBatchSize)
   if (pending.length === 0) return
 

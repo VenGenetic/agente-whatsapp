@@ -11,3 +11,16 @@ backup-*.json
 
 # Estado interno de herramientas, no del proyecto.
 .claude/
+
+# Registro local de que se subio al respaldo: es estado de esta maquina.
+.auth-backup-manifest.json
+
+# Copias de seguridad del .env: llevan la SERVICE ROLE key y la de Gemini.
+# El patron de arriba solo tapa el archivo exacto ".env".
+.env.*
+!.env.example
+
+# Carpetas de sesion apartadas al re-vincular el QR: son credenciales.
+auth_state_anterior_*/
+# Estado local de la CLI de Supabase.
+supabase/.temp/

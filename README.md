@@ -12,6 +12,15 @@ loguea todo en `agent_conversations` / `agent_messages`. También corre un job
 periódico que avisa por WhatsApp cuando llega el stock de una demanda
 pendiente. Ver `docs/system-prompts.md` para el diseño de los prompts.
 
+Desde la **Bandeja de WhatsApp del ERP** se le contesta al cliente sin salir
+del sistema: texto, fotos (adjuntar, pegar con Ctrl+V o arrastrar),
+archivos, respuestas rápidas, y un buscador del catálogo que manda el
+repuesto con su foto, su precio y su disponibilidad. Todo eso se encola en
+`agent_outbox` y lo despacha este proceso. Las fotos que manda el cliente
+también quedan guardadas y se ven en el hilo. Ver
+`docs/responder-desde-el-erp.md` (incluye la puesta en marcha:
+migraciones 0026 y 0027 + `npm run verificar-envio`).
+
 Verificado contra Supabase y Gemini reales (`npm run verify` — ver
 `scripts/verify-setup.ts`): migraciones aplicadas, RPC de búsqueda
 encontrando productos reales, y las dos llamadas de Gemini funcionando de

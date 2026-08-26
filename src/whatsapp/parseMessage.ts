@@ -54,12 +54,30 @@ export function parseIncomingMessage(msg: WAMessage): ParsedMessage | null {
   // En un mensaje propio, `remoteJid` es el DESTINATARIO (el cliente) --
   // que es justo la conversación donde queremos guardarlo. `senderPn`
   // apunta al número del bot, así que no sirve acá.
-  const identityJid = fromMe ? remoteJid : (msg.key.senderPn ?? remoteJid)
-  // Si el chat va por LID, `identityJid` no es un teléfono: se guarda como
-  // `lid` y el número queda pendiente hasta que WhatsApp lo comparta (ver
-  // el evento `chats.phoneNumberShare` en baileys.ts).
+  // En Baileys 7 el número real detrás de un chat @lid viene en
+  // `remoteJidAlt` (antes era `senderPn`). Es la contraparte del jid del
+  // chat: si el chat va por LID, acá está el teléfono, y viceversa.
+  const identityJid = fromMe ? remoteJid : (msg.key.remoteJidAlt ?? remoteJid)
   const identityIsLid = isLid(identityJid)
-  const lid = identityIsLid ? identityJid.split('@')[0] : null
+
+  // El LID sale del CHAT, no de la identidad.
+  //
+  // Antes se sacaba de `identityJid`, y eso partía en dos al mismo cliente:
+  // cuando WhatsApp mandaba `remoteJidAlt` (el teléfono real) el `lid`
+  // quedaba en null aunque el chat fuera un chat @lid, y cuando no lo
+  // mandaba -- o el mensaje era nuestro (`fromMe`), que ni lo mira -- la
+  // conversación se guardaba bajo los dígitos del LID como si fueran un
+  // teléfono. Resultado: dos filas del mismo chat, una con el número y
+  // otra con el "ID interno", cada una con la mitad de los mensajes. Se
+  // midieron 37 pares así, con 493 mensajes del lado equivocado.
+  //
+  // `chat_jid` es lo único estable: viene igual en todos los mensajes del
+  // chat, los propios y los del cliente.
+  const lid = isLid(chatJid)
+    ? chatJid.split('@')[0]
+    : identityIsLid
+      ? identityJid.split('@')[0]
+      : null
   const phoneNumber = normalizePhoneNumber(identityJid.split('@')[0])
   const pushName = fromMe ? null : (msg.pushName ?? null)
   const whatsappMessageId = msg.key.id ?? null
