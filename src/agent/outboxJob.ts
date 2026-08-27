@@ -1,6 +1,7 @@
 import type { AnyMessageContent, WASocket } from '@whiskeysockets/baileys'
 import { type ContentType, logOutboundMessage } from '../db/conversations.js'
 import { supabase } from '../supabaseClient.js'
+import { humanDelay } from '../utils/humanDelay.js'
 import { toChatJid } from '../utils/phone.js'
 import { conPermiso } from '../whatsapp/outboundGuard.js'
 import {
@@ -185,6 +186,9 @@ export async function runOutboxJob(sock: WASocket): Promise<void> {
   const pendientes = await leerPendientes()
   if (pendientes.length === 0) return
 
+  /** El primero sale sin pausa; a partir del segundo se toma ritmo. */
+  let primerEnvio = true
+
   for (const item of pendientes) {
     const conversacion = item.agent_conversations
     if (!conversacion) {
@@ -278,6 +282,27 @@ export async function runOutboxJob(sock: WASocket): Promise<void> {
           .eq('id', item.id)
         continue
       }
+
+      /*
+        Ritmo entre mensajes, no antes del primero.
+
+        Mandar decenas de mensajes seguidos, perfectamente regulares y sin
+        pausa, es el patrón que Meta marca como automatizado -- y el costo
+        no es que fallen los envíos, es que bloqueen el número del negocio.
+        El resto del agente ya se cuida de esto (`humanDelay`, usado en las
+        respuestas y en el aviso de stock); la cola era el único camino que
+        salía a toda velocidad. Se nota cuando alguien avisa "ya llegó tu
+        repuesto" a cien clientes de la lista de espera: cien primeros
+        contactos en dos minutos.
+
+        El PRIMERO de cada vuelta sale sin esperar. Ese es el caso normal
+        -- alguien escribió un mensaje en el ERP y el cliente lo está
+        esperando del otro lado -- y el propio `humanDelay` explica que se
+        acortó justamente para no hacerlo esperar. La pausa aparece recién
+        a partir del segundo, que es cuando hay una tanda.
+      */
+      if (!primerEnvio) await humanDelay()
+      primerEnvio = false
 
       // Único canal que puede llegarle a un cliente con el freno en
       // `erp_only`: acá el contenido lo escribió una persona del equipo y

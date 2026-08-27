@@ -35,9 +35,27 @@ startWhatsApp()
       latir().catch(() => {})
     }, HEARTBEAT_INTERVAL_MS)
 
-    // PAUSADO A PROPÓSITO (temporal): compitiendo por cuota de Gemini con
-    // pruebas en vivo. Reactivar sacando el comentario cuando termine la
-    // sesión de pruebas -- quedan pocas demandas atascadas por mandar.
+    /*
+      APAGADO A PROPÓSITO. Leer esto antes de descomentarlo.
+
+      Avisar "ya llegó tu repuesto" hoy lo hace una PERSONA desde el ERP:
+      bandeja de WhatsApp -> "Por avisar", o el botón "Notificar" de
+      Solicitudes. Ese camino muestra el mensaje antes de mandarlo, reserva
+      el pedido de forma atómica para que dos vendedores no avisen lo mismo
+      dos veces, y respeta el tope por hora.
+
+      Este job hace lo mismo pero solo y sin que nadie lo mire. Si se
+      enciende, los dos caminos compiten por las mismas demandas.
+
+      Y hay algo que antes no pasaba: hasta la migración 20260827150000
+      casi ninguna demanda llegaba al estado `stock_available`, así que
+      esto no tenía a quién avisarle. Ahora hay más de cien. Descomentarlo
+      sin pensar sale como una tanda de más de cien mensajes automáticos.
+
+      Segundo candado: arranca con `if (config.outboundMode !== 'full')
+      return`, así que con OUTBOUND_MODE=erp_only no corre ni descomentado.
+      Los dos candados tienen que caer para que esto mande algo.
+    */
     // setInterval(() => {
     //   const sock = getSocket()
     //   if (!sock) return // reconectando o deslogueado -- se reintenta en el próximo tick

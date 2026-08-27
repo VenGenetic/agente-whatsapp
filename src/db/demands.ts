@@ -62,12 +62,33 @@ export type PendingNotification = {
   customerName: string | null
 }
 
+/*
+  AVISAR = ESTÁ EN LA BODEGA.
+
+  El stock de la importadora no cuenta para avisar, aunque el repuesto
+  exista y venga en camino: decirle a alguien "ya llegó lo que pediste"
+  cuando todavía no lo tenemos en la mano es prometer una fecha que no
+  controlamos, y el cliente viene al mostrador y no está.
+
+  Es la misma regla que aplica el ERP en el aviso manual desde la bandeja
+  (`FILTRO_EN_BODEGA` en components/whatsapp/avisarLlegada.ts) y en la
+  tarjeta "Listos para Notificar". Las dos tienen que decir lo mismo: si
+  este job se enciende con la regla vieja, le avisaría a clientes que el
+  ERP a propósito no muestra como avisables.
+
+  Ojo con `status = 'stock_available'`: desde la migración
+  20260827150000 ese estado significa "hay stock en algún lado", que es
+  MÁS amplio que esto. Por eso el filtro va igual acá, sobre el producto.
+*/
 export async function getPendingStockNotifications(): Promise<PendingNotification[]> {
   const { data, error } = await supabase
     .from('product_demands')
-    .select('id, product_id, phone_number, customer_name')
+    // `!inner` para que el filtro de stock descarte DEMANDAS y no solo el
+    // producto embebido.
+    .select('id, product_id, phone_number, customer_name, products!inner(local_stock)')
     .eq('status', 'stock_available')
     .is('notified_at', null)
+    .gt('products.local_stock', 0)
 
   if (error) throw error
   return (data ?? []).map((row) => ({
@@ -113,8 +134,11 @@ export async function getStuckPendingDemands(): Promise<PendingNotification[]> {
         if (p.is_active === false) return false
         const stillDiscontinued = p.is_discontinued && (!p.discontinued_until || new Date(p.discontinued_until) > now)
         if (stillDiscontinued) return false
-        const effectiveImporterStock = p.importer_unavailable_override ? 0 : (p.importer_stock ?? 0)
-        return (p.local_stock ?? 0) > 0 || effectiveImporterStock > 0
+        // Solo bodega propia, igual que `getPendingStockNotifications`:
+        // la importadora no habilita un aviso. Por eso tampoco hace falta
+        // mirar `importer_unavailable_override`, que solo corrige el
+        // número del proveedor.
+        return (p.local_stock ?? 0) > 0
       })
       .map((p) => p.id),
   )
