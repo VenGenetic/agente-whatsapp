@@ -9,6 +9,7 @@ import {
   contenidoEditar,
   contenidoReaccion,
   marcarLeidoEnWhatsApp,
+  marcarNoLeidoEnWhatsApp,
   mensajeCitado,
 } from './outboxActions.js'
 
@@ -18,7 +19,7 @@ const POR_VUELTA = 5
 const MAX_INTENTOS = 3
 
 /** Lo que puede llevar un mensaje encolado desde el ERP (migraciones 0026 y 0030). */
-type TipoSalida = 'text' | 'image' | 'video' | 'document' | 'audio' | 'delete' | 'reaction' | 'edit' | 'read'
+type TipoSalida = 'text' | 'image' | 'video' | 'document' | 'audio' | 'delete' | 'reaction' | 'edit' | 'read' | 'unread'
 
 type Pendiente = {
   id: number
@@ -226,6 +227,18 @@ export async function runOutboxJob(sock: WASocket): Promise<void> {
         continue
       }
 
+      // Y la vuelta: dejar el chat pendiente también en el teléfono. Tampoco
+      // le llega nada al cliente, así que tampoco pasa por el freno.
+      if (item.kind === 'unread') {
+        await marcarNoLeidoEnWhatsApp(sock, item.conversation_id, jid)
+        await supabase
+          .from('agent_outbox')
+          .update({ status: 'sent', sent_at: new Date().toISOString(), error: null })
+          .eq('id', item.id)
+        console.log(`Outbox: chat ${jid} marcado como NO leído.`)
+        continue
+      }
+
       const contenido = await construirContenido(item, jid)
       if (!contenido) {
         await supabase
@@ -260,7 +273,20 @@ export async function runOutboxJob(sock: WASocket): Promise<void> {
         continue
       }
 
-      await guardarEnvio(item, sent?.key?.id ?? null, item.kind, item.media_url, null)
+      // A PARTIR DE ACÁ EL MENSAJE YA ESTÁ EN EL TELÉFONO DEL CLIENTE.
+      //
+      // Lo que sigue es anotarlo en nuestra base, y eso puede fallar por su
+      // cuenta (un corte con Supabase, un choque de clave). Cuando eso
+      // pasaba, el fallo caía en el `catch` de abajo y se trataba como si
+      // el envío hubiera fallado: se sumaba un intento y el mensaje se
+      // MANDABA DE NUEVO -- el cliente lo recibía dos y tres veces -- y al
+      // agotar los intentos el ERP mostraba "No se pudo enviar" sobre un
+      // mensaje que el cliente ya tenía.
+      //
+      // Un envío no se puede deshacer, así que un fallo posterior nunca
+      // puede reabrirlo. La fila se cierra igual y el problema de registro
+      // queda anotado como aviso.
+      await registrarSinReenviar(item, sent?.key?.id ?? null, item.kind, item.media_url, null)
       console.log(`Outbox: mensaje #${item.id} (${item.kind}) enviado a ${jid}.`)
     } catch (err) {
       const mensaje = err instanceof Error ? err.message : String(err)
@@ -278,7 +304,8 @@ export async function runOutboxJob(sock: WASocket): Promise<void> {
             toChatJid({ phone_number: conversacion.phone_number, lid: conversacion.lid })
           const soloTexto = await conPermiso('human_erp', () => sock.sendMessage(jid, { text: item.body! }))
           if (soloTexto) {
-            await guardarEnvio(
+            // Mismo caso: el texto ya salió, anotarlo no puede reenviarlo.
+            await registrarSinReenviar(
               item,
               soloTexto?.key?.id ?? null,
               'text',
@@ -305,6 +332,50 @@ export async function runOutboxJob(sock: WASocket): Promise<void> {
         })
         .eq('id', item.id)
       console.error(`Outbox: fallo enviando el mensaje #${item.id} (intento ${intentos}):`, mensaje)
+    }
+  }
+}
+
+/**
+ * Anota un mensaje QUE YA SALIÓ, pase lo que pase con la base.
+ *
+ * Si el registro falla, la fila se cierra igual como enviada: es la única
+ * respuesta correcta cuando el cliente ya lo tiene en el teléfono.
+ * Reintentar sería mandárselo otra vez, y marcarlo fallido sería mentirle
+ * a quien lo escribió.
+ *
+ * Lo que sí queda es el aviso, para que se vea que el historial de esa
+ * conversación puede tener un hueco.
+ */
+async function registrarSinReenviar(
+  item: Pendiente,
+  whatsappMessageId: string | null,
+  tipo: TipoSalida,
+  mediaUrl: string | null,
+  aviso: string | null,
+): Promise<void> {
+  try {
+    await guardarEnvio(item, whatsappMessageId, tipo, mediaUrl, aviso)
+  } catch (err) {
+    const detalle = err instanceof Error ? err.message : String(err)
+    console.error(`Outbox: el mensaje #${item.id} SALIÓ pero no se pudo registrar:`, detalle)
+    try {
+      await supabase
+        .from('agent_outbox')
+        .update({
+          status: 'sent',
+          sent_at: new Date().toISOString(),
+          error: `El mensaje se envió, pero no se pudo anotar en el historial (${detalle})`,
+        })
+        .eq('id', item.id)
+    } catch (err2) {
+      // Si tampoco se puede cerrar la fila, el próximo turno la va a
+      // reintentar y el cliente puede recibirla repetida. No hay nada
+      // mejor que hacer desde acá, pero tiene que quedar dicho.
+      console.error(
+        `Outbox: TAMPOCO se pudo cerrar la fila #${item.id}. Puede reenviarse y llegarle repetido al cliente.`,
+        err2,
+      )
     }
   }
 }

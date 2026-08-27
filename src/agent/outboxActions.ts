@@ -100,11 +100,13 @@ export function contenidoEditar(clave: ClaveMensaje, texto: string): AnyMessageC
 /**
  * Marca leídos los mensajes del cliente en ese chat -- el doble tilde azul.
  *
- * Se hace al RESPONDER, no al abrir el chat. La diferencia importa para el
- * cliente: si alguien abre la conversación para mirarla y no contesta en
- * ese momento, ver el tilde azul le dice "te leí y te dejé esperando", que
- * molesta más que no haber abierto. Marcado junto con la respuesta, el
- * tilde aparece cuando el cliente ya tiene su contestación.
+ * Se hace al ABRIR el chat, igual que WhatsApp Web, y no solo al
+ * responder. No es una preferencia estética: el conteo de no leídos NO lo
+ * calculamos nosotros, lo espeja WhatsApp (ver syncChatUnreadCounts). Si
+ * el ERP apagara el contador por su cuenta sin avisarle a WhatsApp, el
+ * chat seguiría no leído en el teléfono y el siguiente `chats.update` lo
+ * volvería a encender -- que es exactamente lo que se veía: chats que
+ * reaparecían como pendientes después de haberlos atendido.
  */
 export async function marcarLeidoEnWhatsApp(
   sock: WASocket,
@@ -129,6 +131,55 @@ export async function marcarLeidoEnWhatsApp(
 
   await sock.readMessages(claves)
   return claves.length
+}
+
+/**
+ * Marca el chat como NO leído en WhatsApp, para que vuelva a aparecer
+ * pendiente también en el teléfono.
+ *
+ * Es la vuelta del par: sin esto, "marcar sin leer" en el ERP era un
+ * espejo local que WhatsApp pisaba en el siguiente `chats.update`, y el
+ * botón parecía no hacer nada.
+ *
+ * WhatsApp necesita saber DESDE QUÉ mensaje queda sin leer, así que va la
+ * clave del último mensaje del chat.
+ */
+export async function marcarNoLeidoEnWhatsApp(
+  sock: WASocket,
+  conversationId: number,
+  chatJid: string,
+): Promise<void> {
+  const { data, error } = await supabase
+    .from('agent_messages')
+    .select('whatsapp_message_id, direction, created_at')
+    .eq('conversation_id', conversationId)
+    .not('whatsapp_message_id', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (error) throw error
+  if (!data?.whatsapp_message_id) {
+    // Un chat sin un solo mensaje registrado no se puede marcar: WhatsApp
+    // no tiene desde dónde contar.
+    throw new Error('No hay ningún mensaje registrado en este chat para marcarlo sin leer')
+  }
+
+  await sock.chatModify(
+    {
+      markRead: false,
+      lastMessages: [
+        {
+          key: {
+            remoteJid: chatJid,
+            id: data.whatsapp_message_id,
+            fromMe: data.direction === 'outbound',
+          },
+          messageTimestamp: Math.floor(new Date(data.created_at).getTime() / 1000),
+        },
+      ],
+    },
+    chatJid,
+  )
 }
 
 /**
