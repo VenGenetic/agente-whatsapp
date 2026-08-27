@@ -1,4 +1,5 @@
 import { runGapsReportJob } from './agent/gapsReportJob.js'
+import { runGroupsJob } from './agent/groupsJob.js'
 import { iniciarOutboxWatcher } from './agent/outboxWatcher.js'
 import { runProactiveIntakeJob } from './agent/proactiveIntakeJob.js'
 import { runStockNotificationJob } from './agent/stockNotificationJob.js'
@@ -15,6 +16,12 @@ const PROACTIVE_INTAKE_INTERVAL_MS = 30 * 1000
 // Solo tiene que acertar la ventana horaria (GAPS_REPORT_HOUR); corta sin
 // tocar la base cuando no es la hora, así que 30 min alcanza de sobra.
 const GAPS_REPORT_INTERVAL_MS = 30 * 60 * 1000
+/**
+ * Cada cuánto se relee la lista de grupos. Media hora: los grupos se
+ * crean y se renombran de vez en cuando, no todo el tiempo, y cada
+ * consulta le pregunta a WhatsApp por todos.
+ */
+const GROUPS_SYNC_INTERVAL_MS = 30 * 60 * 1000
 // Cada 30s: el ERP da por caído al agente si el latido tiene más de 2
 // minutos, así que este ritmo deja margen para un par de fallos seguidos
 // sin dar una falsa alarma. Es un solo UPDATE de una fila.
@@ -67,6 +74,19 @@ startWhatsApp()
       if (!sock) return
       runGapsReportJob(sock).catch((err) => console.error('Error en el job de resumen de huecos:', err))
     }, GAPS_REPORT_INTERVAL_MS)
+
+    // Los grupos a los que pertenece la cuenta, para poder ESCRIBIRLES
+    // desde el ERP (el requerimiento de compra cuando un cliente abona).
+    // No lee nada de lo que se dice adentro: la entrada de grupos sigue
+    // ignorada. Se relee de a ratos porque los grupos se crean, se
+    // renombran y a veces te sacan de uno.
+    const sincronizarGrupos = () => {
+      const sock = getSocket()
+      if (!sock) return
+      runGroupsJob(sock).catch((err) => console.error('Error sincronizando los grupos:', err))
+    }
+    sincronizarGrupos()
+    setInterval(sincronizarGrupos, GROUPS_SYNC_INTERVAL_MS)
 
     // Envía lo que el equipo escribe desde el ERP, apenas se encola.
     // Escucha en vivo en vez de preguntar cada pocos segundos (ver

@@ -229,6 +229,12 @@ export async function runOutboxJob(sock: WASocket): Promise<void> {
       // `sendMessage` no falla contra un destino inexistente, así que un
       // número mal tipeado quedaría como enviado, el pedido archivado, y
       // el cliente esperando sin que nadie lo sepa.
+      // Un grupo no se comprueba con `onWhatsApp`: eso pregunta por un
+      // TELÉFONO y un grupo no lo tiene. Los grupos entran con su
+      // `chat_jid` ya puesto por `runGroupsJob`, así que esta condición
+      // no los alcanza -- pero queda dicho, porque el día que un grupo
+      // llegue sin chat_jid la pregunta devolvería "no existe" y el
+      // mensaje quedaría fallido sin motivo real.
       if (!conversacion.chat_jid && !conversacion.lid) {
         const canonico = await confirmarNumeroEnWhatsApp(sock, item.conversation_id, conversacion.phone_number)
         if (!canonico) {
