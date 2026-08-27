@@ -57,7 +57,10 @@ export async function runGroupsJob(sock: WASocket): Promise<void> {
     const { error } = await supabase.from('agent_conversations').upsert(
       {
         phone_number: identificador,
-        customer_name: grupo.subject ?? 'Grupo sin nombre',
+        // `?? ` no alcanza: WhatsApp devuelve el asunto como cadena VACÍA
+        // en algunos grupos, no como null (se vio en 4 de 34), y eso
+        // dejaba filas en blanco en la lista de la bandeja.
+        customer_name: grupo.subject?.trim() || 'Grupo sin nombre',
         chat_jid: jid,
         is_group: true,
         // Un grupo no se atiende con el bot. Explícito y no por defecto:

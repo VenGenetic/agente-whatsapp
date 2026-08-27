@@ -5,7 +5,7 @@ import { runProactiveIntakeJob } from './agent/proactiveIntakeJob.js'
 import { runStockNotificationJob } from './agent/stockNotificationJob.js'
 import { runMergeConversationsJob } from './agent/mergeConversationsJob.js'
 import { latir } from './db/heartbeat.js'
-import { getSocket, startWhatsApp } from './whatsapp/baileys.js'
+import { cuandoConecte, getSocket, startWhatsApp } from './whatsapp/baileys.js'
 
 const STOCK_NOTIFICATION_INTERVAL_MS = 5 * 60 * 1000
 // 30s: el cliente está esperando del otro lado y a los 3 minutos ya se
@@ -85,7 +85,10 @@ startWhatsApp()
       if (!sock) return
       runGroupsJob(sock).catch((err) => console.error('Error sincronizando los grupos:', err))
     }
-    sincronizarGrupos()
+    // La primera pasada va enganchada a la conexión y no acá: `groupFetchAllParticipating`
+    // le PREGUNTA a WhatsApp, y en este punto el socket existe pero
+    // todavía no conectó -- se comprobó, fallaba con "Connection Closed".
+    cuandoConecte(sincronizarGrupos)
     setInterval(sincronizarGrupos, GROUPS_SYNC_INTERVAL_MS)
 
     // Envía lo que el equipo escribe desde el ERP, apenas se encola.

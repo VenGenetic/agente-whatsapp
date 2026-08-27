@@ -96,6 +96,25 @@ function instalarFrenoDeSalida(sock: WASocket): void {
   }) as WASocket['sendMessage']
 }
 
+/**
+ * Cosas que hay que hacer recién cuando la conexión está ABIERTA.
+ *
+ * `startWhatsApp()` resuelve con el socket ya creado pero todavía sin
+ * conectar, así que cualquier cosa que le PREGUNTE algo a WhatsApp apenas
+ * arranca el proceso falla con "Connection Closed" (428). Se comprobó en
+ * vivo con la sincronización de grupos: el error salía en el log justo
+ * antes del "Conectado a WhatsApp.".
+ *
+ * Se vuelven a ejecutar en cada reconexión, que es lo correcto: al
+ * recuperar la sesión conviene releer lo que pudo cambiar mientras estuvo
+ * caída.
+ */
+const alConectar: Array<() => void> = []
+
+export function cuandoConecte(tarea: () => void): void {
+  alConectar.push(tarea)
+}
+
 export async function startWhatsApp(): Promise<WASocket> {
   await restoreAuthState(AUTH_DIR)
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR)
@@ -232,6 +251,15 @@ export async function startWhatsApp(): Promise<WASocket> {
       // (ver db/heartbeat.ts).
       latirEnSegundoPlano('connected')
       console.log('Conectado a WhatsApp.')
+
+      // Y recién ahora, lo que necesita preguntarle algo a WhatsApp.
+      for (const tarea of alConectar) {
+        try {
+          tarea()
+        } catch (err) {
+          logger.error({ err }, 'Error en una tarea de post-conexión')
+        }
+      }
     }
   })
 
