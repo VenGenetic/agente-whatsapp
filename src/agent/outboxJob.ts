@@ -5,6 +5,7 @@ import { toChatJid } from '../utils/phone.js'
 import { conPermiso } from '../whatsapp/outboundGuard.js'
 import {
   claveDe,
+  confirmarNumeroEnWhatsApp,
   contenidoBorrar,
   contenidoEditar,
   contenidoReaccion,
@@ -209,9 +210,36 @@ export async function runOutboxJob(sock: WASocket): Promise<void> {
 
     try {
       // Dirección real del chat, nunca reconstruida (ver migración 0022).
-      const jid =
+      let jid =
         conversacion.chat_jid ??
         toChatJid({ phone_number: conversacion.phone_number, lid: conversacion.lid })
+
+      // Un chat que NUNCA se vio en WhatsApp: ni dirección real ni LID.
+      //
+      // Es el que abre el ERP a partir de un teléfono escrito a mano, para
+      // avisarle que llegó su repuesto a alguien que nunca escribió al
+      // WhatsApp del negocio. Todo chat que existe de verdad tiene una de
+      // las dos cosas, así que esta condición señala exactamente esos.
+      //
+      // Antes de escribirle hay que confirmar que el número tenga cuenta:
+      // `sendMessage` no falla contra un destino inexistente, así que un
+      // número mal tipeado quedaría como enviado, el pedido archivado, y
+      // el cliente esperando sin que nadie lo sepa.
+      if (!conversacion.chat_jid && !conversacion.lid) {
+        const canonico = await confirmarNumeroEnWhatsApp(sock, item.conversation_id, conversacion.phone_number)
+        if (!canonico) {
+          await supabase
+            .from('agent_outbox')
+            .update({
+              status: 'failed',
+              error: 'Ese número no tiene WhatsApp (o está mal escrito): no se le puede escribir.',
+            })
+            .eq('id', item.id)
+          console.log(`Outbox: #${item.id} descartado, ${conversacion.phone_number} no está en WhatsApp.`)
+          continue
+        }
+        jid = canonico
+      }
 
       // Marcar leído no manda nada al chat: es un acuse, así que va por su
       // propio camino y ni pasa por el freno de salida (no le llega un

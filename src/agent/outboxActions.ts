@@ -15,6 +15,50 @@ import { supabase } from '../supabaseClient.js'
 
 export type ClaveMensaje = proto.IMessageKey
 
+/**
+ * Confirma que un número existe en WhatsApp, antes de escribirle por
+ * primera vez.
+ *
+ * Hace falta porque `sendMessage` NO falla cuando el destino no existe:
+ * devuelve como si hubiera salido y el mensaje no llega nunca (es lo
+ * mismo que ya se comprobó en vivo con los LID mal armados, ver
+ * `toChatJid`). Sin esta verificación, avisarle "ya llegó tu repuesto" a
+ * un número mal tipeado quedaría registrado como enviado y el pedido
+ * archivado, y nadie se enteraría de que ese cliente sigue esperando.
+ *
+ * Solo se usa para chats que NUNCA se vieron en WhatsApp -- los que abre
+ * el ERP a partir de un teléfono escrito a mano. Un chat en el que el
+ * cliente ya escribió no necesita comprobación, y preguntarlo en cada
+ * envío sería una vuelta de red por mensaje.
+ *
+ * Devuelve la dirección canónica que responde WhatsApp, o `null` si ese
+ * número no tiene cuenta. La dirección se guarda en la conversación: es
+ * la respuesta a "a dónde se le escribe", y guardarla evita volver a
+ * preguntar en el próximo mensaje.
+ */
+export async function confirmarNumeroEnWhatsApp(
+  sock: WASocket,
+  conversationId: number,
+  phoneNumber: string,
+): Promise<string | null> {
+  const digitos = phoneNumber.replace(/\D/g, '')
+  if (!digitos) return null
+
+  const resultados = await sock.onWhatsApp(digitos)
+  const encontrado = resultados?.[0]
+  if (!encontrado?.exists || !encontrado.jid) return null
+
+  const { error } = await supabase
+    .from('agent_conversations')
+    .update({ chat_jid: encontrado.jid })
+    .eq('id', conversationId)
+  // Que no se pueda guardar no invalida la respuesta: se manda igual y la
+  // próxima vez se vuelve a preguntar.
+  if (error) console.warn('No se pudo guardar chat_jid de la conversación:', error.message)
+
+  return encontrado.jid
+}
+
 /** Qué mostrar en la cita cuando el mensaje citado no tiene texto. */
 const DESCRIPCION_SIN_TEXTO: Record<string, string> = {
   image: 'Foto',
