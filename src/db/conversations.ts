@@ -10,6 +10,8 @@ export type ConversationRow = {
    * para cada cliente nuevo (ver migración 0017).
    */
   botEnabled: boolean
+  /** Agente elegido para este chat al activarlo desde el ERP. */
+  selectedAgent: 'intake' | 'sales' | null
 }
 
 export type ContentType =
@@ -196,10 +198,10 @@ export async function upsertConversation(
         .from('agent_conversations')
         .update(cambios)
         .eq('id', existente.id)
-        .select('id, status, bot_enabled')
+        .select('id, status, bot_enabled, selected_agent')
         .single()
       if (error) throw error
-      return { id: data.id, status: data.status, botEnabled: Boolean(data.bot_enabled) }
+      return { id: data.id, status: data.status, botEnabled: Boolean(data.bot_enabled), selectedAgent: data.selected_agent }
     }
   }
 
@@ -216,11 +218,11 @@ export async function upsertConversation(
       },
       { onConflict: 'phone_number' },
     )
-    .select('id, status, bot_enabled')
+    .select('id, status, bot_enabled, selected_agent')
     .single()
 
   if (error) throw error
-  return { id: data.id, status: data.status, botEnabled: Boolean(data.bot_enabled) }
+  return { id: data.id, status: data.status, botEnabled: Boolean(data.bot_enabled), selectedAgent: data.selected_agent }
 }
 
 export async function logInboundMessage(
@@ -485,12 +487,12 @@ export async function lastReplyWasClarification(conversationId: number): Promise
 export async function getConversationState(conversationId: number): Promise<ConversationRow | null> {
   const { data, error } = await supabase
     .from('agent_conversations')
-    .select('id, status, bot_enabled')
+    .select('id, status, bot_enabled, selected_agent')
     .eq('id', conversationId)
     .maybeSingle()
   if (error) throw error
   if (!data) return null
-  return { id: data.id, status: data.status, botEnabled: Boolean(data.bot_enabled) }
+  return { id: data.id, status: data.status, botEnabled: Boolean(data.bot_enabled), selectedAgent: data.selected_agent }
 }
 
 export async function setConversationStatus(

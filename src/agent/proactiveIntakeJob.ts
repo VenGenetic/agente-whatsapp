@@ -25,6 +25,7 @@ async function getPendingIntakes(limit: number): Promise<PendingIntake[]> {
     .from('agent_conversations')
     .select('id, phone_number, customer_name, lid, chat_jid')
     .eq('bot_enabled', true)
+    .eq('selected_agent', 'intake')
     .is('intake_started_at', null)
     .in('status', ['bot_active'])
     .order('last_message_at', { ascending: false, nullsFirst: false })

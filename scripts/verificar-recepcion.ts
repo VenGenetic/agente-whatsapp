@@ -145,39 +145,41 @@ function verificarRouter(): void {
   const soloVentas = { recepcion: false, ventas: true }
 
   // El punto de partida buscado: recepción automática + vendedor humano.
-  esperar('chat nuevo, solo recepción -> recepción', decidirAgente('new', soloRecepcion), 'intake')
-  esperar('juntando datos -> recepción', decidirAgente('intake_in_progress', soloRecepcion), 'intake')
-  esperar('esperando al cliente -> recepción', decidirAgente('waiting_customer_info', soloRecepcion), 'intake')
+  esperar('chat nuevo, recepción elegida -> recepción', decidirAgente('new', soloRecepcion, 'intake'), 'intake')
+  esperar('juntando datos -> recepción', decidirAgente('intake_in_progress', soloRecepcion, 'intake'), 'intake')
+  esperar('esperando al cliente -> recepción', decidirAgente('waiting_customer_info', soloRecepcion, 'intake'), 'intake')
 
   // Lo más importante de todo: con la ficha lista y el vendedor apagado,
   // NO contesta nadie. Si acá saliera 'intake', la recepción volvería a
   // preguntar datos que el cliente ya dio.
-  esperar('ficha lista y vendedor apagado -> nadie', decidirAgente('ready_for_sales', soloRecepcion), null)
-  esperar('ficha lista y vendedor encendido -> ventas', decidirAgente('ready_for_sales', ambos), 'sales')
-  esperar('cotizando -> ventas', decidirAgente('sales_in_progress', ambos), 'sales')
+  esperar('ficha lista con recepción -> nadie', decidirAgente('ready_for_sales', ambos, 'intake'), null)
+  esperar('ficha lista con ventas -> ventas', decidirAgente('ready_for_sales', ambos, 'sales'), 'sales')
+  esperar('cotizando con ventas -> ventas', decidirAgente('sales_in_progress', ambos, 'sales'), 'sales')
 
   // Una persona tomó el chat: no contesta nadie, aunque los dos agentes
   // estén encendidos. Es la regla 10.
-  esperar('lo tomó un humano -> nadie', decidirAgente('human_assigned', ambos), null)
-  esperar('conversación resuelta -> nadie', decidirAgente('resolved', ambos), null)
+  esperar('lo tomó un humano -> nadie', decidirAgente('human_assigned', ambos, 'sales'), null)
+  esperar('conversación resuelta -> nadie', decidirAgente('resolved', ambos, 'sales'), null)
 
   // Con todo apagado no sale nada: ante la duda, silencio.
-  esperar('todo apagado -> nadie', decidirAgente('new', ninguno), null)
-  esperar('todo apagado, ficha lista -> nadie', decidirAgente('ready_for_sales', ninguno), null)
+  esperar('todo apagado -> nadie', decidirAgente('new', ninguno, 'intake'), null)
+  esperar('todo apagado, ficha lista -> nadie', decidirAgente('ready_for_sales', ninguno, 'sales'), null)
 
   // Modo "todo automático" de más adelante.
-  esperar('solo ventas, chat nuevo -> ventas', decidirAgente('new', soloVentas), 'sales')
+  esperar('ventas elegida, chat nuevo -> ventas', decidirAgente('new', soloVentas, 'sales'), 'sales')
+
+  esperar('activado sin elegir agente -> nadie', decidirAgente('new', ambos, null), null)
 
   // Sin la migración 0035 la etapa viene en null: tiene que comportarse
   // como antes de que existieran las etapas.
-  esperar('sin migración (etapa null) -> recepción', decidirAgente(null, soloRecepcion), 'intake')
+  esperar('sin etapa, recepción elegida -> recepción', decidirAgente(null, soloRecepcion, 'intake'), 'intake')
 
   // Y que ninguna etapa quede sin decisión definida.
   const todas: Etapa[] = [
     'new', 'intake_in_progress', 'waiting_customer_info',
     'ready_for_sales', 'sales_in_progress', 'human_assigned', 'resolved',
   ]
-  const decididas = todas.map((e) => decidirAgente(e, ambos))
+  const decididas = todas.map((e) => decidirAgente(e, ambos, e.startsWith('sales') ? 'sales' : 'intake'))
   esperar('las 7 etapas tienen una decisión', decididas.length, 7)
   esperar(
     'y con todo encendido nunca contestan los dos',

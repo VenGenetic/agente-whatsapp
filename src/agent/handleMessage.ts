@@ -125,23 +125,25 @@ function mapEscalationReason(reason: InterpretResult['escalationReason']): Escal
 export function decidirAgente(
   etapa: Etapa | null,
   encendidos: AgentesEncendidos,
+  seleccionado: 'intake' | 'sales' | null = null,
 ): 'intake' | 'sales' | null {
   // Ya la tiene una persona, o la conversación terminó.
   if (etapaCerrada(etapa)) return null
+
+  // La eleccion es por conversacion. No se adivina un agente cuando el
+  // ERP activa el chat sin guardar cual debe atenderlo.
+  if (!seleccionado) return null
+  if (seleccionado === 'sales') return encendidos.ventas ? 'sales' : null
 
   // La recepción ya hizo lo suyo: de acá en adelante es trabajo del
   // vendedor. Si el vendedor está apagado, no contesta nadie -- que es
   // justamente el punto de partida buscado: la ficha queda lista y la
   // atiende una persona.
   if (etapa === 'ready_for_sales' || etapa === 'sales_in_progress') {
-    return encendidos.ventas ? 'sales' : null
+    return null
   }
 
-  if (encendidos.recepcion) return 'intake'
-  // Sin recepción pero con vendedor encendido, atiende el vendedor desde
-  // el principio: es el modo "todo automático" de más adelante.
-  if (encendidos.ventas) return 'sales'
-  return null
+  return encendidos.recepcion ? 'intake' : null
 }
 
 /**
@@ -151,14 +153,17 @@ export function decidirAgente(
  * WhatsApp (npm run verificar-recepcion): es la función que decide si a un
  * cliente le llega o no un mensaje, y esa no puede quedar sin cubrir.
  */
-async function elegirAgente(etapa: Etapa | null): Promise<'intake' | 'sales' | null> {
+async function elegirAgente(
+  etapa: Etapa | null,
+  seleccionado: 'intake' | 'sales' | null,
+): Promise<'intake' | 'sales' | null> {
   // Sin la migración 0035 no hay interruptores en la base: se usa
   // AGENT_MODE, o sea exactamente el comportamiento anterior.
   const encendidos = await agentesEncendidos({
     recepcion: config.agentMode === 'intake',
     ventas: config.agentMode === 'full',
   })
-  return decidirAgente(etapa, encendidos)
+  return decidirAgente(etapa, encendidos, seleccionado)
 }
 
 async function sendAndLog(
@@ -667,7 +672,7 @@ async function processIntakeMessage(
 
 async function processMessage(
   sock: WASocket,
-  conversation: { id: number; status: string },
+  conversation: { id: number; status: string; selectedAgent: 'intake' | 'sales' | null },
   parsed: NonNullable<ReturnType<typeof parseIncomingMessage>>,
   msg: WAMessage,
   /**
@@ -702,6 +707,12 @@ async function processMessage(
   // había contestado dos mensajes antes.
   const customerMessage = textoDeLaRafaga(rafaga)
 
+  // Se decide antes del saludo para que incluso la primera respuesta
+  // respete el agente elegido al activar este chat.
+  const etapa = await etapaDe(conversation.id)
+  const agente = await elegirAgente(etapa, conversation.selectedAgent)
+  if (!agente) return
+
   // Un saludo pelado ("hola", "buenas tardes") no tiene nada que
   // interpretar: el cliente todavía no pidió nada. Se contesta desde el
   // banco de saludos, sin gastar ninguna llamada al modelo y sin repetir
@@ -719,22 +730,12 @@ async function processMessage(
     await sendAndLog(sock, conversation.id, parsed.chatJid, saludo, {
       actionTaken: 'greeting',
       // El saludo lo arma la recepción, aunque no pase por el modelo.
-      agent: 'intake',
+      agent: agente,
     })
     return
   }
 
   // Un solo punto de decisión: ver `elegirAgente`.
-  const etapa = await etapaDe(conversation.id)
-  const agente = await elegirAgente(etapa)
-
-  if (!agente) {
-    // Nadie contesta. El mensaje quedó registrado y el chat se ve en la
-    // bandeja esperando a una persona -- que es lo que corresponde
-    // cuando la recepción terminó y el vendedor automático está apagado.
-    return
-  }
-
   if (agente === 'intake') {
     // Primera respuesta de la recepción en este chat: deja de ser 'new'.
     if (etapa === 'new' || etapa === null) {
@@ -972,7 +973,11 @@ export async function handleIncomingMessage(sock: WASocket, msg: WAMessage): Pro
     const ultimo = mensajes[mensajes.length - 1]
     try {
       await withTimeout(
-        processMessage(sock, { id: conversation.id, status: actual.status }, ultimo.parsed, ultimo.msg, mensajes),
+        processMessage(sock, {
+          id: conversation.id,
+          status: actual.status,
+          selectedAgent: actual.selectedAgent,
+        }, ultimo.parsed, ultimo.msg, mensajes),
         PROCESS_MESSAGE_TIMEOUT_MS,
         'processMessage',
       )

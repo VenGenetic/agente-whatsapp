@@ -27,6 +27,7 @@ export type Fila = {
   customer_id: number | null
   status: string
   bot_enabled: boolean
+  selected_agent: 'intake' | 'sales' | null
   last_message_at: string | null
   unread_count: number
 }
@@ -34,7 +35,7 @@ export type Fila = {
 export type Par = { conTelefono: Fila; conLid: Fila }
 
 const CAMPOS =
-  'id, phone_number, lid, chat_jid, customer_name, customer_id, status, bot_enabled, last_message_at, unread_count'
+  'id, phone_number, lid, chat_jid, customer_name, customer_id, status, bot_enabled, selected_agent, last_message_at, unread_count'
 
 /**
  * Los pares duplicados, buscados DENTRO de la base (migración 0029).
@@ -180,6 +181,9 @@ export async function unificarPar({ conTelefono, conLid }: Par): Promise<Resulta
       // mano, se respeta: apagarlo en silencio rompería lo que el negocio
       // ya había decidido para ese cliente.
       bot_enabled: queda.bot_enabled || sobra.bot_enabled,
+      // Conserva la eleccion del chat que queda; si no tenia, toma la del
+      // duplicado. Nunca inventa un agente al fusionar.
+      selected_agent: queda.selected_agent ?? sobra.selected_agent,
       unread_count: Math.max(queda.unread_count ?? 0, sobra.unread_count ?? 0),
       last_message_at: fechas.length ? fechas.sort().at(-1) : null,
       updated_at: new Date().toISOString(),
