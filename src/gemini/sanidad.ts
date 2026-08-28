@@ -125,3 +125,25 @@ export function limpiarTextoParaElCliente(texto: string): string {
     .trim()
   return limpio === texto ? texto : limpio
 }
+
+/**
+ * Texto ROTO a nivel de caracteres, distinto de la basura de formato.
+ *
+ * Visto en pruebas: el modelo devolvió "¿Est! bien as!?" en vez de "¿Está
+ * bien así?" -- reemplazó las vocales acentuadas por signos de admiración.
+ *
+ * Acá no se puede reparar como con los numerales: adivinar qué letra iba
+ * es inventar. Lo que corresponde es volver a pedirlo, que es lo que hace
+ * quien llama al detectar esto.
+ *
+ * La regla es angosta a propósito -- un signo de admiración pegado a una
+ * letra por izquierda Y a una letra o signo por derecha. Así "¡Listo!" y
+ * "¡Buenas tardes!" pasan sin problema, que es lo que el bot escribe todo
+ * el día.
+ */
+const ADMIRACION_EN_MEDIO = /[a-záéíóúüñ]![?¿a-záéíóúüñ]/i
+
+export function textoCorrupto(valor: unknown): boolean {
+  if (typeof valor !== 'string') return false
+  return ADMIRACION_EN_MEDIO.test(valor)
+}

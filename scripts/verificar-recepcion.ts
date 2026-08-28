@@ -19,8 +19,10 @@
  */
 import { correspondeSaludar, esSaludoPuro, textoDeSaludo } from '../src/agent/saludos.js'
 import { rescatarLoLimpio } from '../src/agent/intake.js'
-import { campoContaminado, limpiarTextoParaElCliente } from '../src/gemini/sanidad.js'
+import { campoContaminado, limpiarTextoParaElCliente, textoCorrupto } from '../src/gemini/sanidad.js'
 import { nombreDePila } from '../src/agent/nombreDelCliente.js'
+import { decidirAgente } from '../src/agent/handleMessage.js'
+import type { Etapa } from '../src/db/etapas.js'
 
 let fallos = 0
 
@@ -134,6 +136,56 @@ function verificarSanidad(): void {
   )
 }
 
+function verificarRouter(): void {
+  console.log('\nQuién contesta: la decisión que puede mandarle un mensaje a un cliente')
+
+  const soloRecepcion = { recepcion: true, ventas: false }
+  const ambos = { recepcion: true, ventas: true }
+  const ninguno = { recepcion: false, ventas: false }
+  const soloVentas = { recepcion: false, ventas: true }
+
+  // El punto de partida buscado: recepción automática + vendedor humano.
+  esperar('chat nuevo, solo recepción -> recepción', decidirAgente('new', soloRecepcion), 'intake')
+  esperar('juntando datos -> recepción', decidirAgente('intake_in_progress', soloRecepcion), 'intake')
+  esperar('esperando al cliente -> recepción', decidirAgente('waiting_customer_info', soloRecepcion), 'intake')
+
+  // Lo más importante de todo: con la ficha lista y el vendedor apagado,
+  // NO contesta nadie. Si acá saliera 'intake', la recepción volvería a
+  // preguntar datos que el cliente ya dio.
+  esperar('ficha lista y vendedor apagado -> nadie', decidirAgente('ready_for_sales', soloRecepcion), null)
+  esperar('ficha lista y vendedor encendido -> ventas', decidirAgente('ready_for_sales', ambos), 'sales')
+  esperar('cotizando -> ventas', decidirAgente('sales_in_progress', ambos), 'sales')
+
+  // Una persona tomó el chat: no contesta nadie, aunque los dos agentes
+  // estén encendidos. Es la regla 10.
+  esperar('lo tomó un humano -> nadie', decidirAgente('human_assigned', ambos), null)
+  esperar('conversación resuelta -> nadie', decidirAgente('resolved', ambos), null)
+
+  // Con todo apagado no sale nada: ante la duda, silencio.
+  esperar('todo apagado -> nadie', decidirAgente('new', ninguno), null)
+  esperar('todo apagado, ficha lista -> nadie', decidirAgente('ready_for_sales', ninguno), null)
+
+  // Modo "todo automático" de más adelante.
+  esperar('solo ventas, chat nuevo -> ventas', decidirAgente('new', soloVentas), 'sales')
+
+  // Sin la migración 0035 la etapa viene en null: tiene que comportarse
+  // como antes de que existieran las etapas.
+  esperar('sin migración (etapa null) -> recepción', decidirAgente(null, soloRecepcion), 'intake')
+
+  // Y que ninguna etapa quede sin decisión definida.
+  const todas: Etapa[] = [
+    'new', 'intake_in_progress', 'waiting_customer_info',
+    'ready_for_sales', 'sales_in_progress', 'human_assigned', 'resolved',
+  ]
+  const decididas = todas.map((e) => decidirAgente(e, ambos))
+  esperar('las 7 etapas tienen una decisión', decididas.length, 7)
+  esperar(
+    'y con todo encendido nunca contestan los dos',
+    decididas.every((d) => d === 'intake' || d === 'sales' || d === null),
+    true,
+  )
+}
+
 function verificarNombre(): void {
   console.log('\nDe qué perfiles de WhatsApp se puede sacar un nombre')
   const casos: Array<[string | null, string | null]> = [
@@ -186,6 +238,25 @@ function verificarTextoAlCliente(): void {
   )
 }
 
+function verificarTextoRoto(): void {
+  console.log('\nTexto roto a nivel de caracteres (no se puede reparar, hay que volver a pedirlo)')
+  esperar(
+    'el caso real: "¿Est! bien as!?"',
+    textoCorrupto('Listo: filtro de aire para Wolf 200 del 2021. ¿Est! bien as!?'),
+    true,
+  )
+  // Lo que el bot escribe todo el día NO puede dar falso positivo: si da,
+  // cada mensaje se reintenta tres veces y termina en el fallback.
+  const sanos = [
+    '¡Listo! ¿De qué año es tu moto?',
+    '¡Buenas tardes, Andrés! ¿Qué repuesto necesitas?',
+    '¡Qué bueno tenerte de vuelta! ¿Qué buscas?',
+    'Dale. ¿De qué lado es, izquierda o derecha?',
+    '¡Perfecto!',
+  ]
+  for (const texto of sanos) esperar(`no marca: "${texto.slice(0, 34)}…"`, textoCorrupto(texto), false)
+}
+
 function verificarRescate(): void {
   console.log('\nQué se rescata cuando el modelo insiste en ensuciar la respuesta')
 
@@ -233,9 +304,11 @@ function verificarRescate(): void {
 function main(): void {
   console.log('Verificando la recepción (no se manda ningún mensaje ni se consulta nada).')
   verificarSaludos()
+  verificarRouter()
   verificarNombre()
   verificarSanidad()
   verificarTextoAlCliente()
+  verificarTextoRoto()
   verificarRescate()
 
   console.log('')
@@ -244,7 +317,7 @@ function main(): void {
     process.exitCode = 1
     return
   }
-  console.log('Todo bien: saludo, nombre, detección de basura, limpieza y rescate.')
+  console.log('Todo bien: saludo, router de agentes, nombre, detección de basura, limpieza y rescate.')
 }
 
 main()

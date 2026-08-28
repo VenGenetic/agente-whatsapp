@@ -34,3 +34,48 @@ export async function isBotAutoReplyEnabled(): Promise<boolean> {
   cached = { enabled, fetchedAt: Date.now() }
   return enabled
 }
+
+/**
+ * Qué agente puede contestar, leído de la base y no de una variable de
+ * entorno.
+ *
+ * Hasta la migración 0035 esto era `AGENT_MODE` en el `.env`: global, y
+ * cambiarlo exigía reiniciar el proceso. Ahora son dos interruptores
+ * independientes, porque el punto de partida real del negocio es
+ * "recepción automática + vendedor humano" y ese estado no se puede
+ * expresar con un solo modo.
+ *
+ * El maestro (`bot_auto_reply_enabled`) sigue mandando por encima de los
+ * dos: en false no contesta nadie.
+ */
+export type AgentesEncendidos = { recepcion: boolean; ventas: boolean }
+
+let cachedAgentes: { valor: AgentesEncendidos; fetchedAt: number } | null = null
+
+export async function agentesEncendidos(respaldo: AgentesEncendidos): Promise<AgentesEncendidos> {
+  if (cachedAgentes && Date.now() - cachedAgentes.fetchedAt < CACHE_TTL_MS) return cachedAgentes.valor
+
+  const { data, error } = await supabase
+    .from('agent_settings')
+    .select('intake_agent_enabled, sales_agent_enabled')
+    .eq('id', 1)
+    .maybeSingle()
+
+  if (error) {
+    // 42703 = falta la migración 0035. NO es un motivo para callar al
+    // agente: se usa lo que diga AGENT_MODE, que es como venía
+    // funcionando. Cualquier otro error sí es motivo para desconfiar, y
+    // el respaldo es igual de conservador.
+    if (error.code !== '42703') {
+      console.error('No se pudo leer qué agentes están encendidos:', error.message)
+    }
+    return respaldo
+  }
+
+  const valor: AgentesEncendidos = {
+    recepcion: Boolean(data?.intake_agent_enabled),
+    ventas: Boolean(data?.sales_agent_enabled),
+  }
+  cachedAgentes = { valor, fetchedAt: Date.now() }
+  return valor
+}

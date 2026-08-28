@@ -9,6 +9,7 @@ import {
   limpiarTextoParaElCliente,
   motivoDeCamposSucios,
   RespuestaInutilizable,
+  textoCorrupto,
 } from '../gemini/sanidad.js'
 import { withRetry } from '../utils/withRetry.js'
 import { withTimeout } from '../utils/withTimeout.js'
@@ -52,6 +53,20 @@ export type IntakeData = {
   modelo: string | null
   anio: string | null
   color: string | null
+  /**
+   * Izquierda/derecha, delantero/trasero, superior/inferior. La referencia
+   * de izquierda y derecha es siempre "sentado como conductor": sin
+   * decirlo, la mitad de las respuestas vienen al revés y el cliente
+   * termina con la tapa del otro lado.
+   */
+  posicion: string | null
+  /**
+   * Cilindraje o versión, SOLO cuando distingue dos variantes del mismo
+   * modelo. En la mayoría de las fichas queda en null.
+   */
+  cilindraje: string | null
+  /** Lo que el cliente dijo y no entra en ningún campo. */
+  observaciones: string | null
 }
 
 export type IntakeResult = {
@@ -76,11 +91,15 @@ const RESPONSE_SCHEMA: Schema = {
     anio: { type: Type.STRING, nullable: true },
     color: { type: Type.STRING, nullable: true },
     color_aplica: { type: Type.BOOLEAN },
+    posicion: { type: Type.STRING, nullable: true },
+    posicion_aplica: { type: Type.BOOLEAN },
+    cilindraje: { type: Type.STRING, nullable: true },
+    observaciones: { type: Type.STRING, nullable: true },
     complete: { type: Type.BOOLEAN },
     next_question: { type: Type.STRING, nullable: true },
     needs_human: { type: Type.BOOLEAN },
   },
-  required: ['complete', 'needs_human', 'color_aplica'],
+  required: ['complete', 'needs_human', 'color_aplica', 'posicion_aplica'],
 }
 
 function buildIntakeSystemPrompt(knownModels: string[]): string {
@@ -112,14 +131,40 @@ seguís con la pregunta que falte.
    (Wing Evo cambió desde 2024). Si dice que no sabe (muy común en motos
    usadas), poné "no sabe" y seguí: el equipo lo resuelve con la foto o el
    número de chasis.
-5. color -- SOLO si esa pieza viene en colores. Carrocería (tanque,
+5. posicion -- SOLO si esa pieza existe en más de una posición:
+   izquierda/derecha (tapas, placas laterales, espejos, guardafangos
+   laterales), delantero/trasero (aros, guardafangos, frenos,
+   amortiguadores, llantas), superior/inferior. Si la pieza es única en
+   la moto (tanque, mascarilla, asiento, cadena, batería), poné
+   posicion_aplica = false y NO preguntes.
+
+   Cuando preguntes izquierda o derecha, aclará SIEMPRE la referencia:
+   "tomando en cuenta que estás sentado en la moto". Sin eso la mitad
+   contesta al revés y el cliente termina con la pieza del otro lado.
+
+6. cilindraje -- SOLO cuando el mismo modelo viene en varias
+   cilindradas o versiones y eso cambia la pieza (ej. Wolf 200 y Wolf
+   250). Si el cliente ya lo dijo dentro del modelo ("Tekken 250"), ya
+   lo tenés: no lo preguntes de nuevo. Si no cambia nada, dejalo en
+   null.
+
+7. color -- SOLO si esa pieza viene en colores. Carrocería (tanque,
    guardafango, placas laterales, mascarilla, asiento, cúpula): sí,
    preguntá. Mecánica (filtro, bujía, cadena, pistón, embrague,
    rodamientos): no, color_aplica = false y no preguntes. Si dice que le
    da igual, poné "no especifica" y seguí.
 
+8. observaciones -- NO se pregunta. Es donde guardás lo que el cliente
+   dijo y no entra en ningún otro campo: que lo necesita para el
+   sábado, que el anterior le duró dos meses, que ya fue a otro local.
+   Si no dijo nada así, dejalo en null.
+
 Un dato en "no sabe" / "no especifica" CUENTA como resuelto: no lo
 vuelvas a preguntar y no impide que complete sea true.
+
+Los obligatorios son repuesto, marca, modelo y año. Posición, cilindraje
+y color se piden SOLO cuando aplican a esa pieza -- pedirlos igual
+convierte la conversación en un interrogatorio, y el cliente se va.
 
 Cada dato va en SU campo, nunca varios juntos en uno. \`repuesto\` lleva
 únicamente el nombre de la pieza ("tanque"), nunca la marca, el modelo, el
@@ -150,6 +195,18 @@ trasero", marca = "Tuko", modelo = "CR3 Max 200", y preguntar el año, que
 era lo único que faltaba. Nada que el cliente ya dijo -- en este mensaje o
 en el historial -- se vuelve a preguntar. Si contesta algo ambiguo,
 repreguntá por ESE dato puntual.
+
+## Cuando no se entiende qué pieza es
+
+La gente nombra los repuestos como puede: "la tapa de un lado", "el
+plástico de adelante", "la cosa donde va el foco", "la máscara", "la
+carcasa". Interpretalo y traducilo a terminología de repuestos, que es lo
+que sirve después.
+
+Pero si con lo que dijo hay DOS piezas posibles, no elijas una: o
+preguntá cuál es, o pedile una foto. Nunca escribas en \`repuesto\` una
+pieza que no estás seguro de que sea la que pidió -- el vendedor va a
+cotizar sobre eso.
 
 ## Fotos y notas de voz
 
@@ -229,7 +286,11 @@ respuesta.
 Cuando ya tengas todos los datos, NO cierres todavía. Primero repetile en
 UNA línea lo que entendiste y preguntale si está bien:
 
-    Listo Andrés: tanque para Wolf 200 del 2019, en negro. ¿Está bien así?
+    Listo Andrés: tapa lateral derecha para Tekken 250 del 2024, en negro.
+    ¿Está bien así?
+
+En el resumen entra lo que aplica a esa pieza, no todos los campos: si no
+preguntaste el color porque es un filtro, tampoco lo nombres.
 
 Este paso evita el error caro del negocio: una pieza pedida para el año o
 el color equivocado hace que el cliente venga al local al pedo, y muchas
@@ -346,12 +407,26 @@ ${formatHistory(params.history)}
             modelo: datos.modelo,
             anio: datos.anio,
             color: datos.color,
+            posicion: datos.posicion,
+            cilindraje: datos.cilindraje,
           }),
+          // Las observaciones son prosa del cliente, no un dato corto: van
+          // con el largo de una frase, como la pregunta.
+          ...camposContaminados({ observaciones: datos.observaciones }, LARGO_DE_LA_PREGUNTA),
           // La pregunta la lee el CLIENTE: acá el largo permitido es otro,
           // pero el razonamiento filtrado sería todavía más visible.
           ...camposContaminados({ next_question: datos.next_question }, LARGO_DE_LA_PREGUNTA),
         ]
         if (sucios.length > 0) throw new RespuestaInutilizable(motivoDeCamposSucios(sucios), datos)
+
+        // Texto roto a nivel de caracteres ("¿Est! bien as!?"). No se puede
+        // arreglar adivinando qué letra iba, así que se vuelve a pedir.
+        if (textoCorrupto(datos.next_question)) {
+          throw new RespuestaInutilizable(
+            `la pregunta al cliente vino con caracteres rotos: ${JSON.stringify(datos.next_question)?.slice(0, 120)}`,
+            datos,
+          )
+        }
 
         // "Listo" sin la pieza ni el modelo no es un dato completo, es una
         // respuesta rota: el vendedor recibiría un aviso de "datos listos"
@@ -388,6 +463,9 @@ ${formatHistory(params.history)}
       modelo: parsed.modelo ?? null,
       anio: parsed.anio ?? null,
       color: parsed.color ?? null,
+      posicion: parsed.posicion ?? null,
+      cilindraje: parsed.cilindraje ?? null,
+      observaciones: parsed.observaciones ?? null,
     },
     complete: Boolean(parsed.complete),
     nextQuestion: paraElCliente(parsed.next_question),
@@ -435,7 +513,14 @@ export function rescatarLoLimpio(datos: Record<string, any>): Record<string, any
     marca: limpio(datos.marca),
     anio: limpio(datos.anio),
     color: limpio(datos.color),
-    next_question: limpio(datos.next_question, LARGO_DE_LA_PREGUNTA),
+    posicion: limpio(datos.posicion),
+    cilindraje: limpio(datos.cilindraje),
+    observaciones: limpio(datos.observaciones, LARGO_DE_LA_PREGUNTA),
+    // Si después de los reintentos sigue rota, se descarta: mejor que el
+    // flujo pida ayuda a una persona a mandarle al cliente algo ilegible.
+    next_question: textoCorrupto(datos.next_question)
+      ? null
+      : limpio(datos.next_question, LARGO_DE_LA_PREGUNTA),
     // Sin pieza o sin modelo no hay nada completo que entregar.
     complete: Boolean(datos.complete) && Boolean(repuesto) && Boolean(modelo),
   }
@@ -449,6 +534,11 @@ export function formatIntakeSummary(data: IntakeData): string {
     `Modelo: ${data.modelo ?? '(no dijo)'}`,
     `Año: ${data.anio ?? '(no dijo)'}`,
   ]
+  // Los condicionales solo se muestran si aplican a esa pieza: una línea
+  // "Posición: -" en la ficha de un filtro es ruido, no información.
+  if (data.cilindraje) lines.push(`Cilindraje: ${data.cilindraje}`)
+  if (data.posicion) lines.push(`Posición: ${data.posicion}`)
   if (data.color) lines.push(`Color: ${data.color}`)
+  if (data.observaciones) lines.push(`Observaciones: ${data.observaciones}`)
   return lines.join('\n')
 }

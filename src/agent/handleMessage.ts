@@ -2,6 +2,7 @@ import type { WAMessage, WASocket } from '@whiskeysockets/baileys'
 import { config } from '../config.js'
 import {
   type ActionTaken,
+  type AgenteQueEscribe,
   getConversationState,
   getRecentHistory,
   lastReplyWasClarification,
@@ -12,7 +13,9 @@ import {
   type HistoryTurn,
 } from '../db/conversations.js'
 import { registerLostDemand, registerProductDemand } from '../db/demands.js'
-import { isBotAutoReplyEnabled } from '../db/settings.js'
+import { agentesEncendidos, isBotAutoReplyEnabled, type AgentesEncendidos } from '../db/settings.js'
+import { cambiarEtapa, etapaCerrada, etapaDe, type Etapa } from '../db/etapas.js'
+import { guardarBorrador, marcarFichaLista, type FichaDeRecepcion } from '../db/fichaDeRecepcion.js'
 import { createEscalation, type EscalationReason } from '../db/escalations.js'
 import { interpretMessage, type InterpretedItem, type InterpretResult } from '../gemini/interpret.js'
 import { runIntake } from './intake.js'
@@ -105,12 +108,71 @@ function mapEscalationReason(reason: InterpretResult['escalationReason']): Escal
   }
 }
 
+/**
+ * Quién contesta este mensaje. Es el ÚNICO lugar del sistema donde se
+ * decide, y por eso dos agentes no pueden hablar a la vez ni aunque los
+ * dos estén encendidos.
+ *
+ * Antes era un `if (config.agentMode === 'intake')` a mitad de
+ * `processMessage`: global, con reinicio del proceso, y sin forma de
+ * expresar el estado real del negocio, que es "recepción automática +
+ * vendedor humano".
+ *
+ * El caso `null` -- que no conteste nadie -- es deliberado y no un
+ * agujero: ante la duda es mejor que el chat quede visible en la bandeja
+ * esperando a una persona, que mandarle al cliente algo inventado.
+ */
+export function decidirAgente(
+  etapa: Etapa | null,
+  encendidos: AgentesEncendidos,
+): 'intake' | 'sales' | null {
+  // Ya la tiene una persona, o la conversación terminó.
+  if (etapaCerrada(etapa)) return null
+
+  // La recepción ya hizo lo suyo: de acá en adelante es trabajo del
+  // vendedor. Si el vendedor está apagado, no contesta nadie -- que es
+  // justamente el punto de partida buscado: la ficha queda lista y la
+  // atiende una persona.
+  if (etapa === 'ready_for_sales' || etapa === 'sales_in_progress') {
+    return encendidos.ventas ? 'sales' : null
+  }
+
+  if (encendidos.recepcion) return 'intake'
+  // Sin recepción pero con vendedor encendido, atiende el vendedor desde
+  // el principio: es el modo "todo automático" de más adelante.
+  if (encendidos.ventas) return 'sales'
+  return null
+}
+
+/**
+ * La decisión de arriba, con los interruptores leídos de la base.
+ *
+ * Está separada de `decidirAgente` para poder probar la regla sin base ni
+ * WhatsApp (npm run verificar-recepcion): es la función que decide si a un
+ * cliente le llega o no un mensaje, y esa no puede quedar sin cubrir.
+ */
+async function elegirAgente(etapa: Etapa | null): Promise<'intake' | 'sales' | null> {
+  // Sin la migración 0035 no hay interruptores en la base: se usa
+  // AGENT_MODE, o sea exactamente el comportamiento anterior.
+  const encendidos = await agentesEncendidos({
+    recepcion: config.agentMode === 'intake',
+    ventas: config.agentMode === 'full',
+  })
+  return decidirAgente(etapa, encendidos)
+}
+
 async function sendAndLog(
   sock: WASocket,
   conversationId: number,
   chatJid: string,
   text: string,
-  extra: { productId?: number | null; matchConfidence?: number | null; actionTaken: ActionTaken },
+  extra: {
+    productId?: number | null
+    matchConfidence?: number | null
+    actionTaken: ActionTaken
+    /** Cuál de los dos agentes lo escribió. Ver migración 0035. */
+    agent?: AgenteQueEscribe
+  },
 ): Promise<void> {
   await humanDelay()
   const sent = await sock.sendMessage(chatJid, { text })
@@ -171,11 +233,33 @@ async function escalate(
   reason: EscalationReason,
   history: HistoryTurn[],
   customerMessage: string,
-  options?: { instruction?: string; ownerContext?: string },
+  options?: {
+    instruction?: string
+    ownerContext?: string
+    agent?: AgenteQueEscribe
+    /**
+     * A qué etapa queda. El default es `human_assigned` porque escalar
+     * es, por definición, pasarle el chat a una persona -- la excepción
+     * es la recepción terminada bien, que queda `ready_for_sales`.
+     *
+     * Va acá adentro y no en cada llamador a propósito: hay seis caminos
+     * que escalan (queja, descuento, pregunta del negocio, seguimiento de
+     * pedido, falla técnica, recepción lista) y uno que se olvide de
+     * mover la etapa deja un chat esperando a alguien sin que se note en
+     * la bandeja.
+     */
+    etapa?: Etapa
+  },
 ): Promise<void> {
   const ownerContext = options?.ownerContext ?? customerMessage
   await createEscalation({ conversationId, reason, messageSnapshot: ownerContext })
   await setConversationStatus(conversationId, 'escalated')
+  await cambiarEtapa({
+    conversationId,
+    etapa: options?.etapa ?? 'human_assigned',
+    actor: options?.agent ?? 'system',
+    motivo: `Escalado: ${reason}`,
+  })
 
   const reply = await draftReply({
     facts: { case: 'none' },
@@ -184,7 +268,10 @@ async function escalate(
     customerMessage,
     instruction: options?.instruction ?? 'Reconoce lo que pide el cliente y avísale que en breve le escribe alguien del equipo.',
   })
-  await sendAndLog(sock, conversationId, chatJid, reply, { actionTaken: 'escalated' })
+  await sendAndLog(sock, conversationId, chatJid, reply, {
+    actionTaken: 'escalated',
+    agent: options?.agent ?? 'sales',
+  })
   await notifyOwner(sock, phoneNumber, reason, ownerContext)
 }
 
@@ -462,6 +549,12 @@ async function handleProcessingFailure(
 
   await createEscalation({ conversationId, reason: 'other', messageSnapshot: '(falla técnica interna -- ver logs del servidor)' })
   await setConversationStatus(conversationId, 'escalated')
+  await cambiarEtapa({
+    conversationId,
+    etapa: 'human_assigned',
+    actor: 'system',
+    motivo: 'Falla técnica al procesar el mensaje',
+  })
   const sentFallback = await sock.sendMessage(chatJid, { text: fallbackText })
   await logOutboundMessage(conversationId, {
     body: fallbackText,
@@ -494,22 +587,48 @@ async function processIntakeMessage(
     audio: parsed.contentType === 'audio' && media ? media : undefined,
   })
 
+  // Si mandó una foto en algún momento del hilo, va anotado en la ficha:
+  // el vendedor tiene que saber que hay una imagen que mirar antes de
+  // cotizar. No se pregunta, se deduce.
+  const ficha: FichaDeRecepcion = {
+    ...result.data,
+    fotoRecibida:
+      parsed.contentType === 'image' || history.some((h) => h.contentType === 'image'),
+  }
+
+  // El borrador se guarda SIEMPRE y en cada vuelta, aunque falten datos:
+  // si una persona entra a mitad de la recepción tiene que ver lo que se
+  // lleva juntado, no el hilo entero para reconstruirlo a mano.
+  await guardarBorrador(conversation.id, ficha)
+
   if (result.needsHuman) {
-    await escalate(sock, conversation.id, parsed.phoneNumber, parsed.chatJid, 'other', history, customerMessage)
+    await escalate(sock, conversation.id, parsed.phoneNumber, parsed.chatJid, 'other', history, customerMessage, {
+      agent: 'intake',
+    })
     return
   }
 
   if (result.complete) {
-    // Ya están todos los datos -- se los pasa al equipo y el bot deja de
-    // contestar solo en esta conversación (mismo mecanismo de handoff que
-    // cualquier otro escalamiento).
+    // Ya están todos los datos. La ficha se cierra ANTES de escalar: si el
+    // envío falla, lo que no se puede perder es el trabajo de recepción.
+    const resumen = await resumenParaElVendedor(result.data)
+    await marcarFichaLista(conversation.id, ficha, { resumen, cerrada_at: new Date().toISOString() })
+
+    // Se sigue escalando y avisando al dueño por WhatsApp aunque ahora
+    // exista la etapa: es de lo que el equipo depende hoy para enterarse,
+    // y sacarlo antes de que la bandeja demuestre que ya no hace falta
+    // sería dejar las fichas acumulándose sin que nadie las mire.
     await escalate(sock, conversation.id, parsed.phoneNumber, parsed.chatJid, 'other', history, customerMessage, {
       instruction:
         'Agradecele los datos y avísale que en breve alguien del equipo le confirma disponibilidad y precio. NO le des precio ni disponibilidad vos.',
       // El resumen incluye lo que encontró el catálogo con esos datos
       // (SKU, precio, stock): el vendedor abre el chat y ya sabe de qué
       // producto se habla, en vez de tener que ir a buscarlo él.
-      ownerContext: `[Datos del cliente listos]\n${await resumenParaElVendedor(result.data)}\n\nÚltimo mensaje: "${customerMessage}"`,
+      ownerContext: `[Datos del cliente listos]\n${resumen}\n\nÚltimo mensaje: "${customerMessage}"`,
+      agent: 'intake',
+      // La única escalación que NO es "algo salió mal": la ficha está
+      // completa y lo que sigue es cotizar.
+      etapa: 'ready_for_sales',
     })
     return
   }
@@ -526,11 +645,24 @@ async function processIntakeMessage(
       instruction:
         'Decile en una frase corta que eso se lo confirma alguien del equipo, y que en breve le escriben. NO le des precio, disponibilidad, ni datos de envío vos.',
       ownerContext: `[El bot no supo qué preguntar -- datos hasta ahora]\n${await resumenParaElVendedor(result.data)}\n\nÚltimo mensaje: "${customerMessage}"`,
+      agent: 'intake',
     })
     return
   }
 
-  await sendAndLog(sock, conversation.id, parsed.chatJid, question, { actionTaken: 'asked_clarification' })
+  // Se preguntó algo: la pelota queda del lado del cliente. Es la etapa
+  // que deja ver en la bandeja quién está esperando una respuesta que
+  // nunca llegó.
+  await sendAndLog(sock, conversation.id, parsed.chatJid, question, {
+    actionTaken: 'asked_clarification',
+    agent: 'intake',
+  })
+  await cambiarEtapa({
+    conversationId: conversation.id,
+    etapa: 'waiting_customer_info',
+    actor: 'intake',
+    motivo: 'Se le preguntó un dato y falta que conteste',
+  })
 }
 
 async function processMessage(
@@ -584,13 +716,47 @@ async function processMessage(
     // Como acá no hubo llamada al modelo que demorara, se agrega la pausa
     // que habría tomado leer y escribir el saludo (sendAndLog suma la suya).
     await humanDelay(900, 2200)
-    await sendAndLog(sock, conversation.id, parsed.chatJid, saludo, { actionTaken: 'greeting' })
+    await sendAndLog(sock, conversation.id, parsed.chatJid, saludo, {
+      actionTaken: 'greeting',
+      // El saludo lo arma la recepción, aunque no pase por el modelo.
+      agent: 'intake',
+    })
     return
   }
 
-  if (config.agentMode === 'intake') {
+  // Un solo punto de decisión: ver `elegirAgente`.
+  const etapa = await etapaDe(conversation.id)
+  const agente = await elegirAgente(etapa)
+
+  if (!agente) {
+    // Nadie contesta. El mensaje quedó registrado y el chat se ve en la
+    // bandeja esperando a una persona -- que es lo que corresponde
+    // cuando la recepción terminó y el vendedor automático está apagado.
+    return
+  }
+
+  if (agente === 'intake') {
+    // Primera respuesta de la recepción en este chat: deja de ser 'new'.
+    if (etapa === 'new' || etapa === null) {
+      await cambiarEtapa({
+        conversationId: conversation.id,
+        etapa: 'intake_in_progress',
+        actor: 'intake',
+        motivo: 'El cliente escribió y la recepción empezó a juntar datos',
+      })
+    }
     await processIntakeMessage(sock, conversation, parsed, customerMessage, history, media)
     return
+  }
+
+  // De acá para abajo, el agente VENDEDOR.
+  if (etapa !== 'sales_in_progress') {
+    await cambiarEtapa({
+      conversationId: conversation.id,
+      etapa: 'sales_in_progress',
+      actor: 'sales',
+      motivo: 'El agente vendedor tomó la conversación',
+    })
   }
 
   const interpretation = await interpretMessage({
@@ -710,13 +876,28 @@ export async function handleIncomingMessage(sock: WASocket, msg: WAMessage): Pro
   // escribió la persona del equipo, marcado como 'human_reply'.
   if (parsed.fromMe) {
     const ownConversation = await upsertConversation(parsed.phoneNumber, parsed.pushName, parsed.lid, parsed.chatJid)
-    await logOutboundMessage(ownConversation.id, {
+    const idRegistrado = await logOutboundMessage(ownConversation.id, {
       body: parsed.body ?? '',
       contentType: parsed.contentType,
       actionTaken: 'human_reply',
+      agent: 'human',
       whatsappMessageId: parsed.whatsappMessageId,
       sentAt: parsed.sentAt,
     })
+
+    // Devuelve null cuando el insert chocó con el índice único, o sea
+    // cuando este mensaje es el ECO de algo que mandó el propio bot y ya
+    // estaba registrado. Sin esta distinción, cada respuesta automática
+    // se leería como "un humano tomó el chat" y la recepción se apagaría
+    // sola después del primer mensaje.
+    if (idRegistrado !== null) {
+      await cambiarEtapa({
+        conversationId: ownConversation.id,
+        etapa: 'human_assigned',
+        actor: 'human',
+        motivo: 'Alguien del equipo escribió desde el teléfono',
+      })
+    }
     // La foto que el vendedor mandó desde el teléfono también se guarda:
     // si no, el hilo del ERP muestra "(foto)" y nadie sabe qué se le
     // mandó al cliente.

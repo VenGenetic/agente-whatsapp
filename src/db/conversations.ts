@@ -264,11 +264,21 @@ export type ActionTaken =
   | 'greeting'
   | 'none'
 
+/**
+ * Quién escribió un mensaje saliente. Hace falta desde que hay dos
+ * agentes automáticos: `action_taken` dice QUÉ se hizo, no QUIÉN lo
+ * hizo, y sin esto no se puede auditar cuál de los dos mandó una
+ * respuesta equivocada. Ver migración 0035.
+ */
+export type AgenteQueEscribe = 'intake' | 'sales' | 'human' | 'system'
+
 export type OutboundMessageInput = {
   body: string
   productId?: number | null
   matchConfidence?: number | null
   actionTaken: ActionTaken
+  /** Cuál de los agentes lo escribió. Ver `AgenteQueEscribe`. */
+  agent?: AgenteQueEscribe
   contentType?: ContentType
   /**
    * Id del mensaje en WhatsApp. Guardarlo es lo que evita duplicados: el
@@ -303,6 +313,19 @@ export type OutboundMessageInput = {
  * salida usa ese id para enlazar lo que encoló el ERP con el mensaje
  * real y no mostrarlo dos veces en el hilo.
  */
+/**
+ * Si la columna `agent` (migración 0035) todavía no existe, PostgREST
+ * rechaza la fila ENTERA con 42703 -- no ignora el campo de más. O sea que
+ * mandarla sin que exista no dejaría "sin autoría" al mensaje: lo dejaría
+ * sin registrar, que es la única cosa de todo el sistema que no se puede
+ * perder.
+ *
+ * Se descubre una sola vez, en el primer intento, y a partir de ahí se
+ * omite. El proceso se reinicia después de correr la migración, así que
+ * no hace falta volver a probar.
+ */
+let columnaAgenteDisponible = true
+
 export async function logOutboundMessage(
   conversationId: number,
   message: OutboundMessageInput,
@@ -310,29 +333,40 @@ export async function logOutboundMessage(
   let insertedId: number | null = null
   await withRetry(
     async () => {
-      const { data, error } = await supabase
-        .from('agent_messages')
-        .insert({
-          conversation_id: conversationId,
-          direction: 'outbound',
-          content_type: message.contentType ?? 'text',
-          body: message.body,
-          product_id: message.productId ?? null,
-          match_confidence: message.matchConfidence ?? null,
-          action_taken: message.actionTaken,
-          whatsapp_message_id: message.whatsappMessageId ?? null,
-          ...(message.mediaUrl ? { media_url: message.mediaUrl } : {}),
-          ...(message.sentAt ? { created_at: message.sentAt.toISOString() } : {}),
-          // Arranca en 'pending': hasta que WhatsApp confirme, NO se puede
-          // decir que el cliente lo recibió. Ver `trackDelivery`.
-          ...((message.trackDelivery ?? message.actionTaken !== 'human_reply')
-            ? { delivery_status: 'pending' }
-            : {}),
-        })
-        .select('id')
-        // `maybeSingle` y no `single`: cuando el insert choca con el eco ya
-        // guardado no vuelve ninguna fila, y `single` lo trataría como error.
-        .maybeSingle()
+      const fila = () => ({
+        conversation_id: conversationId,
+        direction: 'outbound',
+        content_type: message.contentType ?? 'text',
+        body: message.body,
+        product_id: message.productId ?? null,
+        match_confidence: message.matchConfidence ?? null,
+        action_taken: message.actionTaken,
+        ...(message.agent && columnaAgenteDisponible ? { agent: message.agent } : {}),
+        whatsapp_message_id: message.whatsappMessageId ?? null,
+        ...(message.mediaUrl ? { media_url: message.mediaUrl } : {}),
+        ...(message.sentAt ? { created_at: message.sentAt.toISOString() } : {}),
+        // Arranca en 'pending': hasta que WhatsApp confirme, NO se puede
+        // decir que el cliente lo recibió. Ver `trackDelivery`.
+        ...((message.trackDelivery ?? message.actionTaken !== 'human_reply')
+          ? { delivery_status: 'pending' }
+          : {}),
+      })
+
+      // `maybeSingle` y no `single`: cuando el insert choca con el eco ya
+      // guardado no vuelve ninguna fila, y `single` lo trataría como error.
+      let { data, error } = await supabase.from('agent_messages').insert(fila()).select('id').maybeSingle()
+
+      // PGRST204 y no 42703: en un INSERT, PostgREST usa ese código para
+      // "esa columna no existe". Con el código equivocado acá, el mensaje
+      // del cliente no se registraba -- que es lo único de todo el sistema
+      // que no se puede perder.
+      if ((error?.code === 'PGRST204' || error?.code === '42703') && message.agent && columnaAgenteDisponible) {
+        console.warn(
+          'Falta la migración 0035 (agent_messages.agent): se registra el mensaje sin anotar qué agente lo escribió.',
+        )
+        columnaAgenteDisponible = false
+        ;({ data, error } = await supabase.from('agent_messages').insert(fila()).select('id').maybeSingle())
+      }
 
       // Duplicado por el eco de WhatsApp: no es un error, ya está registrado.
       if (error && error.code !== '23505') throw error

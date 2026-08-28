@@ -1227,3 +1227,71 @@ son los numerales. Descartarla obligaría a otro viaje al modelo y, si
 insiste, a mandarle el mensaje de falla a alguien por unos caracteres de
 más. Se limpia y se manda (`limpiarTextoParaElCliente`), respetando los
 puntos suspensivos y las comillas de verdad.
+
+## Dos agentes: recepción y ventas (migración 0035)
+
+Los dos agentes ya existían como `AGENT_MODE=intake` y `AGENT_MODE=full`.
+Lo que faltaba era todo lo de alrededor, y es lo que se agregó.
+
+**La ficha se guarda.** Antes, terminar la recepción formateaba los campos
+en un texto y lo mandaba por WhatsApp al dueño; en la base quedaba un
+párrafo dentro de `agent_escalations.message_snapshot`. Ahora hay
+`agent_intake_requests`: una fila por SOLICITUD (el mismo cliente vuelve
+en tres meses por otra pieza), escrita en borrador desde el primer dato
+para que quien entre a mitad de la recepción vea lo que se lleva juntado.
+
+**Campos nuevos**, pedidos solo cuando aplican: `posicion` (con la
+referencia "sentado como conductor", sin la cual la mitad contesta al
+revés), `cilindraje` (solo cuando distingue dos versiones del mismo
+modelo), `observaciones` (no se pregunta) y `foto_recibida` (se deduce del
+hilo).
+
+**Dos ejes, no uno.** `status` sigue contestando "¿quién manda este
+chat?"; la columna nueva `etapa` contesta "¿en qué punto del flujo está?".
+Antes `status` intentaba ser las dos cosas y por eso una recepción
+terminada bien y una falla técnica quedaban iguales -- las dos
+`escalated`. Separándolas, el freno que impide que el bot escriba encima
+de una persona sigue funcionando sin enterarse de que existen las etapas.
+
+**Un solo punto de decisión.** `decidirAgente(etapa, encendidos)` es el
+único lugar donde se elige quién contesta, y por eso dos agentes no pueden
+hablar a la vez ni aunque los dos estén encendidos. El caso "no contesta
+nadie" es deliberado: con la ficha lista y el vendedor apagado, el chat
+queda visible en la bandeja esperando a una persona. Está cubierto por
+`npm run verificar-recepcion`, incluido el caso que más importa -- ficha
+lista y vendedor apagado NO devuelve `intake`, porque si no la recepción
+volvería a preguntar datos que el cliente ya dio.
+
+**Interruptores separados** (`intake_agent_enabled`, `sales_agent_enabled`
+en `agent_settings`), leídos de la base y no del `.env`: cambiarlos ya no
+exige reiniciar el proceso. `AGENT_MODE` queda como respaldo para cuando
+la migración no corrió. El maestro sigue mandando: apagado, no contesta
+ninguno.
+
+### Cuatro códigos para "falta la migración"
+
+Se probó el agente contra la base SIN la migración aplicada, y ahí
+aparecieron dos fallas que no se habrían visto de otra forma:
+
+| código     | significa                                    |
+|------------|----------------------------------------------|
+| `42703`    | columna inexistente al LEER (select)         |
+| `PGRST204` | columna inexistente al ESCRIBIR (insert/update) |
+| `PGRST205` | tabla que no está en el cache de esquema     |
+| `42P01`    | tabla inexistente                            |
+
+La primera versión solo miraba `42703`. El efecto era el peor posible:
+PostgREST rechaza la fila ENTERA cuando se le manda una columna que no
+existe -- no ignora el campo de más --, así que mandar `agent` sin la
+migración **dejaba el mensaje del cliente sin registrar**, que es la
+única cosa de todo el sistema que no se puede perder.
+
+### Texto roto a nivel de caracteres
+
+Otra falla nueva encontrada probando conversaciones completas: el modelo
+devolvió `¿Est! bien as!?` en vez de `¿Está bien así?` -- reemplazó las
+vocales acentuadas por signos de admiración. Esto no se puede reparar
+como los numerales de `limpiarTextoParaElCliente`: adivinar qué letra iba
+es inventar. Se detecta con una regla angosta (una admiración pegada a
+una letra por izquierda y a una letra o signo por derecha, de modo que
+"¡Listo!" pasa) y se vuelve a pedir la respuesta.
