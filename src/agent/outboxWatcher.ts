@@ -36,7 +36,14 @@ async function despachar(sock: WASocket | null): Promise<void> {
   if (!sock || despachando) return
   despachando = true
   try {
-    await runOutboxJob(sock)
+    // `runOutboxJob` toma cinco por vuelta. Se sigue mientras la vuelta
+    // venga llena: de otro modo, el sexto mensaje de una seleccion de
+    // fotos espera al respaldo de 60 segundos porque su evento realtime
+    // llego cuando `despachando` ya estaba activo.
+    let procesados = 0
+    do {
+      procesados = await runOutboxJob(sock)
+    } while (procesados >= 5)
   } catch (err) {
     console.error('Error enviando la cola de salida:', err)
   } finally {

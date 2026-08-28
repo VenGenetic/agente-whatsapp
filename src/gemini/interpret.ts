@@ -2,7 +2,12 @@ import { Type, type Schema } from '@google/genai'
 import { config } from '../config.js'
 import type { HistoryTurn } from '../db/conversations.js'
 import { getKnownModels } from '../matching/knownModels.js'
-import { exigirCamposLimpios } from './sanidad.js'
+import {
+  campoContaminado,
+  camposContaminados,
+  motivoDeCamposSucios,
+  RespuestaInutilizable,
+} from './sanidad.js'
 import { withRetry } from '../utils/withRetry.js'
 import { withTimeout } from '../utils/withTimeout.js'
 import { generarContenido } from './client.js'
@@ -137,40 +142,71 @@ export async function interpretMessage(input: InterpretInput): Promise<Interpret
   // Igual que en recepción: parsear y controlar la sanidad adentro del
   // reintento. Un search_query con el razonamiento del modelo adentro
   // busca cualquier cosa en el catálogo -- ver gemini/sanidad.ts.
-  const parsed = await withRetry(
-    async () => {
-      const response = await withTimeout(
-        generarContenido({
-          model: config.geminiModel,
-          contents: [{ role: 'user', parts }],
-          config: {
-            systemInstruction: buildInterpreterSystemPrompt(knownModels),
-            responseMimeType: 'application/json',
-            responseSchema: RESPONSE_SCHEMA,
-          },
-        }),
-        GEMINI_TIMEOUT_MS,
-        'Gemini interpretMessage',
-      )
+  let parsed: Record<string, any>
+  try {
+    parsed = await withRetry(
+      async () => {
+        const response = await withTimeout(
+          generarContenido({
+            model: config.geminiModel,
+            contents: [{ role: 'user', parts }],
+            config: {
+              systemInstruction: buildInterpreterSystemPrompt(knownModels),
+              responseMimeType: 'application/json',
+              responseSchema: RESPONSE_SCHEMA,
+            },
+          }),
+          GEMINI_TIMEOUT_MS,
+          'Gemini interpretMessage',
+        )
 
-      const raw = response.text
-      if (!raw) throw new Error('Gemini no devolvió texto en la interpretación')
-      const datos = JSON.parse(raw)
+        const raw = response.text
+        if (!raw) throw new Error('Gemini no devolvió texto en la interpretación')
+        const datos = JSON.parse(raw)
 
-      for (const item of Array.isArray(datos.items) ? datos.items : []) {
-        exigirCamposLimpios({
-          search_query: item?.search_query,
-          brand_mentioned: item?.brand_mentioned,
-          vehicle_context: item?.vehicle_context,
-        })
-      }
-      exigirCamposLimpios({ customer_name: datos.customer_name })
+        // El error tiene que llevar la respuesta ENTERA, no el puñado de
+        // campos que se está mirando: el rescate de más abajo necesita el
+        // resto (los items, el intent) para poder seguir con lo limpio.
+        const sucios = [
+          ...camposContaminados({ customer_name: datos.customer_name }),
+          ...(Array.isArray(datos.items) ? datos.items : []).flatMap((item: Record<string, any>) =>
+            camposContaminados({
+              search_query: item?.search_query,
+              brand_mentioned: item?.brand_mentioned,
+              vehicle_context: item?.vehicle_context,
+            }),
+          ),
+        ]
+        if (sucios.length > 0) throw new RespuestaInutilizable(motivoDeCamposSucios(sucios), datos)
 
-      return datos
-    },
-    GEMINI_INTENTOS,
-    GEMINI_ESPERA_ENTRE_INTENTOS_MS,
-  )
+        return datos as Record<string, any>
+      },
+      GEMINI_INTENTOS,
+      GEMINI_ESPERA_ENTRE_INTENTOS_MS,
+    )
+  } catch (err) {
+    // Mismo criterio que en recepción (ver agent/intake.ts): una falla de
+    // la llamada sube, pero una respuesta con un campo sucio se limpia y
+    // se sigue. Un search_query descartado deja el pedido sin texto para
+    // buscar, y de eso el flujo ya sabe qué hacer: pedirle al cliente que
+    // aclare qué repuesto necesita. Es mucho mejor que el mensaje de
+    // "problema técnico".
+    if (!(err instanceof RespuestaInutilizable)) throw err
+    console.warn(`Interpretación: ${err.message}. Se descarta eso y se sigue con el resto.`)
+    const datos = err.datos as Record<string, any>
+    parsed = {
+      ...datos,
+      customer_name: campoContaminado(datos.customer_name) ? null : datos.customer_name,
+      items: Array.isArray(datos.items)
+        ? datos.items.map((item: Record<string, any>) => ({
+            ...item,
+            search_query: campoContaminado(item?.search_query) ? null : item?.search_query,
+            brand_mentioned: campoContaminado(item?.brand_mentioned) ? null : item?.brand_mentioned,
+            vehicle_context: campoContaminado(item?.vehicle_context) ? null : item?.vehicle_context,
+          }))
+        : [],
+    }
+  }
   const items: InterpretedItem[] = Array.isArray(parsed.items)
     ? parsed.items.map((item: Record<string, unknown>) => ({
         searchQuery: (item.search_query as string | null | undefined) ?? null,

@@ -182,14 +182,24 @@ async function leerPendientes(): Promise<Pendiente[]> {
   }))
 }
 
-export async function runOutboxJob(sock: WASocket): Promise<void> {
+export async function runOutboxJob(sock: WASocket): Promise<number> {
   const pendientes = await leerPendientes()
-  if (pendientes.length === 0) return
+  if (pendientes.length === 0) return 0
 
   /** El primero sale sin pausa; a partir del segundo se toma ritmo. */
   let primerEnvio = true
 
   for (const item of pendientes) {
+    // La fila pudo cancelarse despues de que `leerPendientes` la trajo
+    // (por ejemplo mientras salia el mensaje anterior de la tanda).
+    const { data: vigente, error: errorVigente } = await supabase
+      .from('agent_outbox')
+      .select('status')
+      .eq('id', item.id)
+      .maybeSingle()
+    if (errorVigente) throw errorVigente
+    if (vigente?.status !== 'pending') continue
+
     const conversacion = item.agent_conversations
     if (!conversacion) {
       await supabase
@@ -310,6 +320,17 @@ export async function runOutboxJob(sock: WASocket): Promise<void> {
       if (!primerEnvio) await humanDelay()
       primerEnvio = false
 
+      // La pausa anterior es justamente la ventana en la que la persona
+      // suele tocar "Cancelar". Se comprueba otra vez inmediatamente antes
+      // de hablar con WhatsApp para que la cancelacion sea real.
+      const { data: antesDeEnviar, error: errorAntesDeEnviar } = await supabase
+        .from('agent_outbox')
+        .select('status')
+        .eq('id', item.id)
+        .maybeSingle()
+      if (errorAntesDeEnviar) throw errorAntesDeEnviar
+      if (antesDeEnviar?.status !== 'pending') continue
+
       // Único canal que puede llegarle a un cliente con el freno en
       // `erp_only`: acá el contenido lo escribió una persona del equipo y
       // lo mandó a propósito desde el ERP. Los envíos automáticos del
@@ -393,6 +414,9 @@ export async function runOutboxJob(sock: WASocket): Promise<void> {
       console.error(`Outbox: fallo enviando el mensaje #${item.id} (intento ${intentos}):`, mensaje)
     }
   }
+
+
+  return pendientes.length
 }
 
 /**

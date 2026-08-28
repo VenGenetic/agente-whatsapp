@@ -3,7 +3,12 @@ import { config } from '../config.js'
 import type { HistoryTurn } from '../db/conversations.js'
 import { generarContenido } from '../gemini/client.js'
 import { getKnownModels } from '../matching/knownModels.js'
-import { exigirCamposLimpios } from '../gemini/sanidad.js'
+import {
+  campoContaminado,
+  camposContaminados,
+  motivoDeCamposSucios,
+  RespuestaInutilizable,
+} from '../gemini/sanidad.js'
 import { withRetry } from '../utils/withRetry.js'
 import { withTimeout } from '../utils/withTimeout.js'
 
@@ -30,6 +35,8 @@ import { withTimeout } from '../utils/withTimeout.js'
  */
 const GEMINI_TIMEOUT_MS = 40000
 const GEMINI_INTENTOS = 3
+/** Una pregunta al cliente son dos líneas; más que esto es el modelo pensando en voz alta. */
+const LARGO_DE_LA_PREGUNTA = 400
 const GEMINI_ESPERA_ENTRE_INTENTOS_MS = 1500
 
 /**
@@ -253,49 +260,74 @@ ${formatHistory(params.history)}
   // modelo devolvió su razonamiento en vez del dato (pasa, ver
   // gemini/sanidad.ts), lo que hay que hacer es volver a preguntarle, no
   // seguir con basura.
-  const parsed = await withRetry(
-    async () => {
-      const response = await withTimeout(
-        generarContenido({
-          model: config.geminiModel,
-          contents: [{ role: 'user', parts }],
-          config: {
-            systemInstruction: buildIntakeSystemPrompt(knownModels),
-            responseMimeType: 'application/json',
-            responseSchema: RESPONSE_SCHEMA,
-          },
-        }),
-        GEMINI_TIMEOUT_MS,
-        'Gemini runIntake',
-      )
+  // El parseo y los controles de sanidad van ADENTRO del reintento: si el
+  // modelo devolvió su razonamiento en vez del dato (pasa, ver
+  // gemini/sanidad.ts), lo que hay que hacer es volver a preguntarle, no
+  // seguir con basura.
+  let parsed: Record<string, any>
+  try {
+    parsed = await withRetry(
+      async () => {
+        const response = await withTimeout(
+          generarContenido({
+            model: config.geminiModel,
+            contents: [{ role: 'user', parts }],
+            config: {
+              systemInstruction: buildIntakeSystemPrompt(knownModels),
+              responseMimeType: 'application/json',
+              responseSchema: RESPONSE_SCHEMA,
+            },
+          }),
+          GEMINI_TIMEOUT_MS,
+          'Gemini runIntake',
+        )
 
-      const raw = response.text
-      if (!raw) throw new Error('Gemini no devolvió texto en la recepción')
-      const datos = JSON.parse(raw)
+        const raw = response.text
+        if (!raw) throw new Error('Gemini no devolvió texto en la recepción')
+        const datos = JSON.parse(raw)
 
-      exigirCamposLimpios({
-        repuesto: datos.repuesto,
-        marca: datos.marca,
-        modelo: datos.modelo,
-        anio: datos.anio,
-        color: datos.color,
-      })
-      // La pregunta la lee el CLIENTE: acá el largo permitido es otro,
-      // pero el razonamiento filtrado sería todavía más visible.
-      exigirCamposLimpios({ next_question: datos.next_question }, 400)
+        const sucios = [
+          ...camposContaminados({
+            repuesto: datos.repuesto,
+            marca: datos.marca,
+            modelo: datos.modelo,
+            anio: datos.anio,
+            color: datos.color,
+          }),
+          // La pregunta la lee el CLIENTE: acá el largo permitido es otro,
+          // pero el razonamiento filtrado sería todavía más visible.
+          ...camposContaminados({ next_question: datos.next_question }, LARGO_DE_LA_PREGUNTA),
+        ]
+        if (sucios.length > 0) throw new RespuestaInutilizable(motivoDeCamposSucios(sucios), datos)
 
-      // "Listo" sin la pieza ni el modelo no es un dato completo, es una
-      // respuesta rota: el vendedor recibiría un aviso de "datos listos"
-      // con la ficha vacía.
-      if (datos.complete && !(datos.repuesto && datos.modelo)) {
-        throw new Error('El modelo marcó la recepción como completa sin repuesto o sin modelo')
-      }
+        // "Listo" sin la pieza ni el modelo no es un dato completo, es una
+        // respuesta rota: el vendedor recibiría un aviso de "datos listos"
+        // con la ficha vacía.
+        if (datos.complete && !(datos.repuesto && datos.modelo)) {
+          throw new RespuestaInutilizable(
+            'el modelo marcó la recepción como completa sin repuesto o sin modelo',
+            datos,
+          )
+        }
 
-      return datos
-    },
-    GEMINI_INTENTOS,
-    GEMINI_ESPERA_ENTRE_INTENTOS_MS,
-  )
+        return datos as Record<string, any>
+      },
+      GEMINI_INTENTOS,
+      GEMINI_ESPERA_ENTRE_INTENTOS_MS,
+    )
+  } catch (err) {
+    // Una falla de la LLAMADA (timeout, 503) no deja nada que rescatar:
+    // sube y la atiende el fallback de "problema técnico".
+    if (!(err instanceof RespuestaInutilizable)) throw err
+    // Pero si después de tres intentos el modelo sigue devolviendo algo
+    // inservible, tirarlo entero es peor: el cliente recibiría el mensaje
+    // de falla técnica por lo que casi siempre es UN campo. Se rescata lo
+    // limpio y se sigue como si ese dato no lo hubiera dicho -- que es
+    // exactamente lo que pasó.
+    console.warn(`Recepción: ${err.message}. Se descarta eso y se sigue con el resto.`)
+    parsed = rescatarLoLimpio(err.datos)
+  }
+
   return {
     data: {
       repuesto: parsed.repuesto ?? null,
@@ -307,6 +339,38 @@ ${formatHistory(params.history)}
     complete: Boolean(parsed.complete),
     nextQuestion: parsed.next_question ?? null,
     needsHuman: Boolean(parsed.needs_human),
+  }
+}
+
+/**
+ * Deja solo los campos que se pueden usar, después de que el modelo
+ * insistiera en ensuciar la respuesta.
+ *
+ * No inventa nada: lo contaminado se descarta y punto. Si con eso se cae
+ * un dato obligatorio, la recepción deja de estar completa -- el bot
+ * vuelve a preguntar, que es lo correcto, en vez de pasarle al vendedor
+ * una ficha con basura adentro.
+ *
+ * Exportada para poder probarla sin llamar al modelo (npm run
+ * verificar-recepcion): es la red que atrapa al cliente cuando todo lo
+ * demás falló, así que tiene que estar cubierta.
+ */
+export function rescatarLoLimpio(datos: Record<string, any>): Record<string, any> {
+  const limpio = (valor: unknown, largo?: number) => (campoContaminado(valor, largo) ? null : valor)
+
+  const repuesto = limpio(datos.repuesto)
+  const modelo = limpio(datos.modelo)
+
+  return {
+    ...datos,
+    repuesto,
+    modelo,
+    marca: limpio(datos.marca),
+    anio: limpio(datos.anio),
+    color: limpio(datos.color),
+    next_question: limpio(datos.next_question, LARGO_DE_LA_PREGUNTA),
+    // Sin pieza o sin modelo no hay nada completo que entregar.
+    complete: Boolean(datos.complete) && Boolean(repuesto) && Boolean(modelo),
   }
 }
 

@@ -12,9 +12,9 @@
  *
  * 2. VARIEDAD. Pedirle al modelo que "salude distinto cada vez" no
  *    funciona: no ve lo que le contestó a los otros clientes, así que
- *    converge siempre a la misma frase. Acá hay 56 combinaciones y se
- *    descarta la que ya se usó en ese chat, cosa que el modelo no puede
- *    hacer solo.
+ *    converge siempre a la misma frase -- y el negocio termina con el
+ *    mismo "¡Hola! ¿En qué puedo ayudarte?" en cien chats. Acá hay 56
+ *    combinaciones y se elige al azar.
  *
  * Lo que NO hace: si el cliente dice cualquier cosa además del saludo
  * ("buenas, busco un tanque"), esto no se activa -- ahí sí hay que
@@ -123,12 +123,40 @@ export function esSaludoPuro(texto: string | null | undefined): boolean {
 }
 
 /**
- * El saludo que se le manda. `yaDichos` son los textos que el negocio ya
- * mandó en ese chat: sirven para no repetir la misma frase con el mismo
- * cliente (que es lo que delata a un bot más rápido que cualquier otra
- * cosa).
+ * La regla completa de cuándo contestar con el banco de saludos, en un
+ * solo lugar para poder probarla (npm run verificar-recepcion).
+ *
+ * Las tres condiciones son necesarias:
+ *
+ *   - Sin foto ni nota de voz. Un adjunto siempre hay que mirarlo: puede
+ *     ser la pieza que busca, y saludar sin abrirlo sería ignorarla.
+ *   - Que nunca le hayamos contestado en ese chat. Un "hola" suelto a
+ *     mitad de una conversación se contesta con el contexto de lo que ya
+ *     dijo, no con una bienvenida.
+ *   - Que el mensaje sea solo cortesía.
  */
-export function textoDeSaludo(opciones?: { yaDichos?: string[]; ahora?: Date }): string {
+export function correspondeSaludar(params: {
+  texto: string
+  tieneMedia: boolean
+  historial: ReadonlyArray<{ direction: 'inbound' | 'outbound' }>
+}): boolean {
+  if (params.tieneMedia) return false
+  if (params.historial.some((h) => h.direction === 'outbound')) return false
+  return esSaludoPuro(params.texto)
+}
+
+/**
+ * El saludo que se le manda.
+ *
+ * No hace falta llevar registro de cuál se usó: `correspondeSaludar` ya
+ * garantiza que a un mismo cliente se lo saluda una sola vez, así que la
+ * repetición solo podría darse entre clientes distintos, que no se ven
+ * entre sí.
+ *
+ * `ahora` es para poder probar las tres franjas horarias sin esperar al
+ * día siguiente.
+ */
+export function textoDeSaludo(opciones?: { ahora?: Date }): string {
   const saludo = saludoSegunLaHora(opciones?.ahora ?? new Date())
   const negocio = config.businessName
 
@@ -139,9 +167,5 @@ export function textoDeSaludo(opciones?: { yaDichos?: string[]; ahora?: Date }):
     }
   }
 
-  const usados = new Set((opciones?.yaDichos ?? []).map(normalizar))
-  const disponibles = variantes.filter((v) => !usados.has(normalizar(v)))
-  // Si de casualidad se usaron las 56, mejor repetir una que no contestar.
-  const candidatas = disponibles.length > 0 ? disponibles : variantes
-  return candidatas[Math.floor(Math.random() * candidatas.length)]
+  return variantes[Math.floor(Math.random() * variantes.length)]
 }

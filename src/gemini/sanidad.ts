@@ -46,16 +46,45 @@ export function campoContaminado(valor: unknown, largoMaximo = LARGO_MAXIMO_DE_D
   return RASTROS_DE_RAZONAMIENTO.test(texto)
 }
 
+/** Qué campos de este lote vinieron contaminados. Vacío = está limpio. */
+export function camposContaminados(campos: Record<string, unknown>, largoMaximo?: number): string[] {
+  return Object.entries(campos)
+    .filter(([, valor]) => campoContaminado(valor, largoMaximo))
+    .map(([nombre]) => nombre)
+}
+
 /**
- * Lanza si alguno de los campos vino contaminado. Va DENTRO del reintento:
- * la idea es pedirle de nuevo al modelo, no seguir con datos inventados.
+ * El modelo contestó, pero la respuesta no se puede usar tal cual: trae su
+ * razonamiento adentro de un campo, o se contradice a sí misma (dice que
+ * ya tiene todos los datos y no mandó ninguno).
+ *
+ * Es un error aparte y no un Error suelto porque quien llama necesita
+ * distinguirlo. Un timeout o un 503 son fallas de la LLAMADA y no dejan
+ * nada que rescatar; acá sí hay una respuesta, solo que con partes
+ * inservibles. Agotados los reintentos, quedarse con lo limpio es mejor
+ * que dejar al cliente sin ninguna respuesta.
  */
-export function exigirCamposLimpios(campos: Record<string, unknown>, largoMaximo?: number): void {
-  for (const [nombre, valor] of Object.entries(campos)) {
-    if (campoContaminado(valor, largoMaximo)) {
-      throw new Error(
-        `El modelo devolvió su razonamiento en el campo "${nombre}" en vez del dato: ${JSON.stringify(valor)?.slice(0, 200)}`,
-      )
-    }
+export class RespuestaInutilizable extends Error {
+  constructor(
+    motivo: string,
+    /** La respuesta cruda, para poder rescatar lo que sí sirve. */
+    readonly datos: Record<string, unknown>,
+  ) {
+    super(motivo)
+    this.name = 'RespuestaInutilizable'
   }
 }
+
+/** El motivo, redactado igual siempre, para que el log se pueda buscar. */
+export function motivoDeCamposSucios(campos: string[]): string {
+  return `el modelo devolvió su razonamiento en vez del dato, en: ${campos.join(', ')}`
+}
+
+/*
+ * A propósito NO hay un `exigirCamposLimpios(campos)` de conveniencia.
+ * Se probó y era una trampa: lanzaba llevando como `datos` el puñado de
+ * campos que estaba mirando, así que el rescate de quien lo atrapaba se
+ * quedaba sin el resto de la respuesta y la vaciaba. Quien detecta tiene
+ * que armar el error con la respuesta ENTERA -- por eso se exporta
+ * `camposContaminados` y no un atajo que lance solo.
+ */

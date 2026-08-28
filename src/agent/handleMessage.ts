@@ -17,7 +17,7 @@ import { createEscalation, type EscalationReason } from '../db/escalations.js'
 import { interpretMessage, type InterpretedItem, type InterpretResult } from '../gemini/interpret.js'
 import { runIntake } from './intake.js'
 import { resumenParaElVendedor } from './intakeHandoff.js'
-import { esSaludoPuro, textoDeSaludo } from './saludos.js'
+import { correspondeSaludar, textoDeSaludo } from './saludos.js'
 import { encolarParaProcesar, mediaDeLaRafaga, textoDeLaRafaga, type MensajeEnRafaga } from './messageBuffer.js'
 import { draftReply } from '../gemini/respond.js'
 import {
@@ -48,12 +48,18 @@ import { parseIncomingMessage } from '../whatsapp/parseMessage.js'
 // sin respuesta para siempre.
 // Un mensaje puede pedir varios repuestos a la vez -- cada uno llama al
 // redactor por separado, además del intérprete una sola vez para todo el
-// mensaje. Cada llamada a Gemini reintenta una vez (45s + 1s + 45s = ~91s
-// en el peor caso), así que el presupuesto tiene que cubrir el intérprete
-// más hasta MAX_ITEMS_PER_MESSAGE redactores sin cortar un reintento a
-// mitad de camino.
+// mensaje. Cada llamada a Gemini son hasta tres intentos de 40s (40 + 1,5
+// + 40 + 1,5 + 40 = ~123s en el peor caso), así que el presupuesto tiene
+// que cubrir el intérprete más hasta MAX_ITEMS_PER_MESSAGE redactores sin
+// cortar un reintento a mitad de camino.
+//
+// Ojo con leerlo mal: esto NO es lo que se le hace esperar al cliente, es
+// un detector de cuelgues. La mediana real de un mensaje es de 5 a 10
+// segundos; este techo existe para que un proceso trabado termine
+// disparando el fallback en vez de dejar la conversación muda para
+// siempre.
 const MAX_ITEMS_PER_MESSAGE = 3
-const PROCESS_MESSAGE_TIMEOUT_MS = 91000 * (MAX_ITEMS_PER_MESSAGE + 1)
+const PROCESS_MESSAGE_TIMEOUT_MS = 123000 * (MAX_ITEMS_PER_MESSAGE + 1)
 
 const EMPTY_ITEM: InterpretedItem = { searchQuery: null, brandMentioned: null, vehicleContext: null, quantity: 1 }
 
@@ -566,11 +572,8 @@ async function processMessage(
   // Solo en un chat donde nunca contestamos: si ya veníamos hablando,
   // responderle un saludo de bienvenida a un "hola" suelto sería tirar a
   // la basura el contexto de lo que ya nos había dicho.
-  const yaLeContestamos = history.some((h) => h.direction === 'outbound')
-  if (!media && !yaLeContestamos && esSaludoPuro(customerMessage)) {
-    const saludo = textoDeSaludo({
-      yaDichos: history.filter((h) => h.direction === 'outbound').map((h) => h.body ?? ''),
-    })
+  if (correspondeSaludar({ texto: customerMessage, tieneMedia: !!media, historial: history })) {
+    const saludo = textoDeSaludo()
     // Una respuesta instantánea delata al bot más que cualquier redacción.
     // Como acá no hubo llamada al modelo que demorara, se agrega la pausa
     // que habría tomado leer y escribir el saludo (sendAndLog suma la suya).

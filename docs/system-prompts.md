@@ -1047,8 +1047,7 @@ la respuesta no depende de nada que el cliente haya dicho -- porque
 todavía no dijo nada. Es el único mensaje del flujo cuya respuesta se
 puede saber de antemano sin perder calidad, así que se contesta desde un
 banco de 56 combinaciones (8 aperturas x 7 preguntas), con el saludo
-ajustado a la franja horaria de Ecuador (UTC-5 fijo) y descartando el
-texto que ya se usó en ese chat.
+ajustado a la franja horaria de Ecuador (UTC-5 fijo).
 
 La variedad **no se puede pedir por prompt**: el modelo no ve lo que le
 contestó a los otros clientes, así que converge siempre a la misma frase.
@@ -1138,3 +1137,35 @@ respuesta.
 
 Ahora son 40 segundos y tres intentos. El tercero sale casi gratis en el
 caso que más se repite: el 503 falla en ~200ms y no consume el techo.
+
+#### Cuando el modelo insiste: rescatar en vez de romper
+
+La fuga de razonamiento se detecta y se reintenta (tres veces). Si aun así
+sigue viniendo sucia, lo que NO hay que hacer es tirar la respuesta
+entera: el cliente recibiría el mensaje de "problema técnico" y la
+conversación quedaría escalada para siempre, por lo que casi siempre es UN
+campo.
+
+Se rescata lo limpio (`rescatarLoLimpio` en `agent/intake.ts`) y se sigue
+como si ese dato el cliente no lo hubiera dicho -- que es exactamente lo
+que pasó. La única regla dura: si se cae el repuesto o el modelo, la
+recepción deja de estar completa, aunque el modelo haya dicho que sí. Un
+aviso de "datos listos" con la ficha vacía es peor que una pregunta de
+más.
+
+El intérprete hace lo mismo con `search_query`: descartado, el pedido se
+queda sin texto para buscar y el flujo ya sabe qué hacer con eso -- pedir
+que aclare qué repuesto necesita.
+
+Detalle que costó un bug propio y quedó escrito en `gemini/sanidad.ts`: el
+error tiene que llevar la respuesta ENTERA, no el puñado de campos que se
+está mirando. Un helper de conveniencia que lanzara solo con esos campos
+dejaba al rescate sin los items, y los vaciaba.
+
+#### `npm run verificar-recepcion`
+
+Las tres defensas son invisibles cuando se rompen -- el bot sigue
+contestando, solo que mal -- así que hay una verificación que no toca
+WhatsApp, ni la base, ni Gemini: cuándo se saluda desde el banco, qué se
+reconoce como razonamiento filtrado (con los textos reales que se vieron)
+y qué sobrevive al rescate.
