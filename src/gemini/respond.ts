@@ -2,10 +2,12 @@ import { config } from '../config.js'
 import type { EscalationReason } from '../db/escalations.js'
 import { withRetry } from '../utils/withRetry.js'
 import { withTimeout } from '../utils/withTimeout.js'
-import { genai } from './client.js'
+import { generarContenido } from './client.js'
 import { buildResponderSystemPrompt } from './prompts.js'
 
-const GEMINI_TIMEOUT_MS = 20000
+const GEMINI_TIMEOUT_MS = 40000 // ver el porqué en agent/intake.ts
+const GEMINI_INTENTOS = 3
+const GEMINI_ESPERA_ENTRE_INTENTOS_MS = 1500
 
 export type VerifiedFacts =
   | { case: 'in_stock'; productName: string; sku: string; price: number; imageUrl: string | null }
@@ -83,7 +85,7 @@ ${params.instruction}
   const response = await withRetry(
     () =>
       withTimeout(
-        genai.models.generateContent({
+        generarContenido({
           model: config.geminiModel,
           contents: [{ role: 'user', parts: [{ text: prompt }] }],
           config: { systemInstruction: buildResponderSystemPrompt() },
@@ -91,8 +93,8 @@ ${params.instruction}
         GEMINI_TIMEOUT_MS,
         'Gemini draftReply',
       ),
-    2,
-    1000,
+    GEMINI_INTENTOS,
+    GEMINI_ESPERA_ENTRE_INTENTOS_MS,
   )
 
   const text = response.text?.trim()

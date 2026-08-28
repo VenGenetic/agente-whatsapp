@@ -4,7 +4,8 @@ import { getRecentHistory, logOutboundMessage } from '../db/conversations.js'
 import { supabase } from '../supabaseClient.js'
 import { humanDelay } from '../utils/humanDelay.js'
 import { toChatJid, toWhatsAppJid } from '../utils/phone.js'
-import { formatIntakeSummary, runIntake } from './intake.js'
+import { runIntake } from './intake.js'
+import { resumenParaElVendedor } from './intakeHandoff.js'
 
 type PendingIntake = {
   id: number
@@ -93,7 +94,7 @@ export async function runProactiveIntakeJob(sock: WASocket): Promise<void> {
           .eq('id', conversation.id)
         await sock.sendMessage(toWhatsAppJid(config.ownerPhoneNumber), {
           text: result.complete
-            ? `El historial de ${conversation.customerName ?? conversation.phoneNumber} ya tenía todos los datos:\n${formatIntakeSummary(result.data)}`
+            ? `El historial de ${conversation.customerName ?? conversation.phoneNumber} ya tenía todos los datos:\n${await resumenParaElVendedor(result.data)}`
             : `Revisá el chat de ${conversation.customerName ?? conversation.phoneNumber}: el agente no arrancó solo (necesita a alguien del equipo).`,
         })
         continue

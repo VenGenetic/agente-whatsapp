@@ -2,12 +2,15 @@ import { Type, type Schema } from '@google/genai'
 import { config } from '../config.js'
 import type { HistoryTurn } from '../db/conversations.js'
 import { getKnownModels } from '../matching/knownModels.js'
+import { exigirCamposLimpios } from './sanidad.js'
 import { withRetry } from '../utils/withRetry.js'
 import { withTimeout } from '../utils/withTimeout.js'
-import { genai } from './client.js'
+import { generarContenido } from './client.js'
 import { buildInterpreterSystemPrompt } from './prompts.js'
 
-const GEMINI_TIMEOUT_MS = 20000
+const GEMINI_TIMEOUT_MS = 40000 // ver el porqué en agent/intake.ts
+const GEMINI_INTENTOS = 3
+const GEMINI_ESPERA_ENTRE_INTENTOS_MS = 1500
 
 export type InterpreterIntent =
   | 'product_request'
@@ -131,10 +134,13 @@ export async function interpretMessage(input: InterpretInput): Promise<Interpret
 
   const knownModels = await getKnownModels()
 
-  const response = await withRetry(
-    () =>
-      withTimeout(
-        genai.models.generateContent({
+  // Igual que en recepción: parsear y controlar la sanidad adentro del
+  // reintento. Un search_query con el razonamiento del modelo adentro
+  // busca cualquier cosa en el catálogo -- ver gemini/sanidad.ts.
+  const parsed = await withRetry(
+    async () => {
+      const response = await withTimeout(
+        generarContenido({
           model: config.geminiModel,
           contents: [{ role: 'user', parts }],
           config: {
@@ -145,16 +151,26 @@ export async function interpretMessage(input: InterpretInput): Promise<Interpret
         }),
         GEMINI_TIMEOUT_MS,
         'Gemini interpretMessage',
-      ),
-    2,
-    1000,
+      )
+
+      const raw = response.text
+      if (!raw) throw new Error('Gemini no devolvió texto en la interpretación')
+      const datos = JSON.parse(raw)
+
+      for (const item of Array.isArray(datos.items) ? datos.items : []) {
+        exigirCamposLimpios({
+          search_query: item?.search_query,
+          brand_mentioned: item?.brand_mentioned,
+          vehicle_context: item?.vehicle_context,
+        })
+      }
+      exigirCamposLimpios({ customer_name: datos.customer_name })
+
+      return datos
+    },
+    GEMINI_INTENTOS,
+    GEMINI_ESPERA_ENTRE_INTENTOS_MS,
   )
-
-  const raw = response.text
-  if (!raw) throw new Error('Gemini no devolvió texto en la interpretación')
-
-  const parsed = JSON.parse(raw)
-
   const items: InterpretedItem[] = Array.isArray(parsed.items)
     ? parsed.items.map((item: Record<string, unknown>) => ({
         searchQuery: (item.search_query as string | null | undefined) ?? null,

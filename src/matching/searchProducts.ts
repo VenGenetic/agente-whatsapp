@@ -17,6 +17,25 @@ const CATALOG_ABBREVIATIONS: Array<[RegExp, string]> = [
 ]
 
 /**
+ * Palabras del cliente que el catálogo escribe de otra forma. No son
+ * abreviaturas: son otro nombre para la misma pieza.
+ *
+ * El caso medido: el cliente dice "rin" y el catálogo dice "ARO". Con la
+ * palabra del cliente, "rin trasero wolf 200" traía un ARO de otra moto
+ * al 38% y "rines wolf 200" traía BALANCINES al 80% -- un producto que no
+ * tiene nada que ver. Cambiando la palabra, las dos consultas dan el aro
+ * correcto al 90%. Ya había dos alias cargados a mano ("rin tekken
+ * rayos") para tapar justamente esto, uno por producto.
+ *
+ * "RIN" seguido de un número NO se toca: ahí sí es la medida y está en el
+ * nombre tal cual ("ARO POST REFORZADO RIN 10 HUNTER 200").
+ */
+const CATALOG_SYNONYMS: Array<[RegExp, string]> = [
+  [/\bRINES\b/gi, 'ARO'],
+  [/\bRIN\b(?!\s*\d)/gi, 'ARO'],
+]
+
+/**
  * Palabras que el cliente dice pero que casi nunca aparecen tal cual en
  * products.name -- "daytona" es la marca, no un modelo, y como el 100% del
  * catálogo es Daytona no distingue nada. Con el boost de "contiene todas
@@ -47,6 +66,9 @@ const SEARCH_NOISE_WORDS = [
  */
 function withCatalogAbbreviations(query: string): string {
   let result = query
+  for (const [pattern, palabra] of CATALOG_SYNONYMS) {
+    result = result.replace(pattern, palabra)
+  }
   for (const [pattern, abbrev] of CATALOG_ABBREVIATIONS) {
     result = result.replace(pattern, abbrev)
   }

@@ -1034,3 +1034,107 @@ Tres consecuencias en el código:
   que ya está atendiendo.
 
 Cubierto por `npm run verificar-rafagas`, que no toca WhatsApp ni la base.
+
+### Encender el agente: saludos, naturalidad y lo que cuesta cada mensaje
+
+Cambios hechos para poder dejar el agente atendiendo solo en modo
+recepción. Todo lo de abajo se midió contra Gemini y el catálogo real, no
+es criterio a ojo.
+
+**El saludo ya no pasa por el modelo** (`src/agent/saludos.ts`). "hola" y
+"buenas tardes" son el primer mensaje de casi toda conversación nueva, y
+la respuesta no depende de nada que el cliente haya dicho -- porque
+todavía no dijo nada. Es el único mensaje del flujo cuya respuesta se
+puede saber de antemano sin perder calidad, así que se contesta desde un
+banco de 56 combinaciones (8 aperturas x 7 preguntas), con el saludo
+ajustado a la franja horaria de Ecuador (UTC-5 fijo) y descartando el
+texto que ya se usó en ese chat.
+
+La variedad **no se puede pedir por prompt**: el modelo no ve lo que le
+contestó a los otros clientes, así que converge siempre a la misma frase.
+
+Se activa solo si el mensaje es cortesía pura (sin números, sin pieza, sin
+pregunta) **y nunca contestamos antes en ese chat**. Un "hola" suelto a
+mitad de una conversación sigue yendo por el flujo normal: responderle un
+saludo de bienvenida sería tirar el contexto de lo que ya había dicho.
+
+**"Escribiendo..." desde que se empieza a procesar**, no recién al mandar
+(`mostrarEscribiendo` al entrar a `processMessage`). Antes el cliente veía
+silencio durante toda la llamada al modelo y de golpe aparecía un mensaje.
+
+**El vendedor recibe el resumen ya cruzado con el catálogo**
+(`src/agent/intakeHandoff.ts`). Con los datos que juntó la recepción se
+corre la MISMA búsqueda que usa el modo completo y se le adjuntan hasta 3
+candidatos con SKU, precio y stock (local / importadora, respetando el
+flag de "agotado en importadora"). Ejemplo real:
+
+    Repuesto: filtro de aire
+    Marca: Daytona
+    Modelo: Tekken 250
+    Año: 2019
+
+    En catálogo (buscado: "filtro de aire Tekken 250"):
+    1. FILTRO AIRE TEKKEN EVO/AXXO TRACKER/DK NATIVA 250CC
+       CB250TKN-056 · $7 · local 6 / import. 0 · 90%
+
+Si no hay coincidencia lo dice ("hay que revisarlo a mano") y si el
+catálogo falla devuelve igual los datos del cliente: la búsqueda es una
+ayuda, no el mensaje.
+
+**"rin" no es "aro"** (`CATALOG_SYNONYMS` en `searchProducts.ts`). El
+cliente dice "rin", el catálogo dice "ARO". Medido: `rin trasero wolf 200`
+traía un aro de otra moto al 38%, y `rines wolf 200` traía **BALANCINES**
+al 80% -- un producto que no tiene nada que ver. Cambiando la palabra, las
+dos consultas dan el aro correcto al 90%. Ya había dos alias cargados a
+mano para tapar esto de a un producto por vez. "RIN" seguido de número no
+se toca: ahí sí es la medida y está en el nombre ("ARO POST REFORZADO RIN
+10 HUNTER 200").
+
+**El prompt de recepción se acortó de 6.613 a 5.557 caracteres** sin sacar
+ninguna regla (todas venían de un error real) y se le agregó la sección de
+cómo escribir: variar el arranque, no repetir una frase ya usada en esa
+conversación, enganchar con lo que el cliente acaba de decir, devolver el
+saludo en la misma línea, un emoji suelto de vez en cuando.
+
+#### Lo que se midió y NO sirvió
+
+`thinkingLevel` (perilla `GEMINI_THINKING_LEVEL`, default `off`):
+
+- **`low` rompe la salida estructurada.** El modelo vuelca su razonamiento
+  adentro de los campos del JSON y devuelve `next_question` en null, o sea
+  el cliente se queda sin respuesta. Se vio `repuesto =
+  "tanquePool/tank/tanque"` y un campo entero con la frase *"wait, let's
+  format JSON cleanly"*.
+- **`medium` contesta bien pero no ahorra**: 293 y 656 tokens de
+  pensamiento en dos llamadas iguales, contra 310 del default.
+
+La perilla queda porque el modelo se cambia por `.env`, pero si se toca
+hay que volver a medir CALIDAD, no solo latencia.
+
+#### Sanidad de la respuesta (`src/gemini/sanidad.ts`)
+
+Esa fuga de razonamiento **también pasa con el default**, más raro. El
+esquema de respuesta no protege: el JSON es válido y el tipo es correcto,
+la API no tiene forma de saber que el contenido es el borrador del modelo.
+
+Se controla en código, adentro del reintento: si un campo pasa de 45
+caracteres, trae dos o más barras, o contiene rastros de razonamiento, se
+le vuelve a preguntar al modelo en vez de seguir con basura. También se
+rechaza `complete = true` sin repuesto o sin modelo: eso no es un dato
+completo, es una respuesta rota que le llegaría al vendedor como "datos
+listos" con la ficha vacía.
+
+Lo mismo en el intérprete: un `search_query` contaminado busca cualquier
+cosa en el catálogo.
+
+#### Los tiempos reales del modelo
+
+La mediana de una llamada de recepción (2.049 tokens de entrada) es de 4 a
+8 segundos, pero hay picos de 25 y 41, y `gemini-3.6-flash` devuelve 503
+"high demand" cada tanto. Con el techo anterior de 20 segundos y dos
+intentos, **2 de cada 6 mensajes de prueba terminaban en el mensaje de
+"problema técnico"** -- un cliente real habría recibido eso en vez de una
+respuesta.
+
+Ahora son 40 segundos y tres intentos. El tercero sale casi gratis en el
+caso que más se repite: el 503 falla en ~200ms y no consume el techo.

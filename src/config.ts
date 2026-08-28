@@ -8,11 +8,22 @@ function required(name: string): string {
   return value
 }
 
+/** Vacío = no se manda el parámetro y queda el default del modelo. */
+function nivelDeRazonamiento(): string {
+  const valor = (process.env.GEMINI_THINKING_LEVEL ?? 'off').trim().toLowerCase()
+  return valor === 'off' ? '' : valor
+}
+
 export const config = {
   supabaseUrl: required('SUPABASE_URL'),
   supabaseServiceRoleKey: required('SUPABASE_SERVICE_ROLE_KEY'),
   geminiApiKey: required('GEMINI_API_KEY'),
   geminiModel: process.env.GEMINI_MODEL ?? 'gemini-3.6-flash',
+  // Cuánto razona el modelo antes de contestar: minimal | low | medium |
+  // high, o 'off' (default) para no mandar el parámetro y dejar lo que
+  // traiga el modelo. Se midió: bajarlo NO ahorra tokens en este modelo y
+  // en 'low' rompe la salida -- ver gemini/client.ts.
+  geminiThinkingLevel: nivelDeRazonamiento(),
   businessName: process.env.BUSINESS_NAME ?? 'el negocio',
   // Número (con código de país, sin '+' ni espacios, ej. 593987654321) al
   // que el bot avisa por WhatsApp cada vez que escala una conversación.
