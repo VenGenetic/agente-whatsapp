@@ -22,6 +22,7 @@
  */
 
 import { config } from '../config.js'
+import { nombreDePila } from './nombreDelCliente.js'
 
 /** Ecuador es UTC-5 todo el año (no hay horario de verano). */
 const OFFSET_ECUADOR_MS = 5 * 60 * 60 * 1000
@@ -46,9 +47,9 @@ const APERTURAS = [
   '¡{s}!',
   '¡{s}! ¿Cómo estás?',
   '¡{s}! Habla {n}.',
-  '¡Hola! ¿Cómo estás?',
   '¡{s}! ¿Cómo va todo?',
   '¡{s}! Un gusto saludarte.',
+  '¡{s}! Con gusto te ayudamos.',
 ]
 
 const PREGUNTAS = [
@@ -156,14 +157,20 @@ export function correspondeSaludar(params: {
  * `ahora` es para poder probar las tres franjas horarias sin esperar al
  * día siguiente.
  */
-export function textoDeSaludo(opciones?: { ahora?: Date }): string {
+export function textoDeSaludo(opciones?: { ahora?: Date; pushName?: string | null }): string {
   const saludo = saludoSegunLaHora(opciones?.ahora ?? new Date())
   const negocio = config.businessName
+  // El nombre va pegado al saludo y en ningún otro lado: "¡Buenas tardes,
+  // Andrés!" suena a mostrador, repetirlo en la pregunta ya suena a
+  // vendedor de seguros. Si el perfil no da un nombre confiable, queda el
+  // saludo de siempre -- ver nombreDelCliente.ts.
+  const nombre = nombreDePila(opciones?.pushName)
+  const conNombre = (s: string) => (nombre ? `${s}, ${nombre}` : s)
 
   const variantes: string[] = []
   for (const apertura of APERTURAS) {
     for (const pregunta of PREGUNTAS) {
-      variantes.push(`${apertura.replace('{s}', saludo).replace('{n}', negocio)} ${pregunta}`)
+      variantes.push(`${apertura.replace('{s}', conNombre(saludo)).replace('{n}', negocio)} ${pregunta}`)
     }
   }
 

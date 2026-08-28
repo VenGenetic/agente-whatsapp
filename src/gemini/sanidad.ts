@@ -88,3 +88,40 @@ export function motivoDeCamposSucios(campos: string[]): string {
  * que armar el error con la respuesta ENTERA -- por eso se exporta
  * `camposContaminados` y no un atajo que lance solo.
  */
+
+/**
+ * Restos de formato que el modelo mete a veces en el texto que va PARA EL
+ * CLIENTE. Visto en pruebas: "Buen###ísimo, 2019. "?"¿En qué color
+ * necesitas el tanque?" -- la pregunta es correcta, solo que con basura
+ * incrustada.
+ *
+ * Acá no sirve el criterio de los campos de dato (descartar y volver a
+ * preguntar): la frase está bien, es legible y hace avanzar la
+ * conversación. Tirarla obligaría a otro viaje al modelo, y si el
+ * problema persiste el cliente terminaría recibiendo el mensaje de falla
+ * técnica por unos numerales de más. Se repara y se sigue.
+ *
+ * Ninguno de estos caracteres aparece en un mensaje real de WhatsApp de
+ * este negocio; los asteriscos de negrita tampoco, porque el bot escribe
+ * en texto plano a propósito.
+ */
+const BASURA_DE_FORMATO = /[#*~|=_`<>{}\\]+/g
+
+/** Un signo suelto entre comillas ("?"), el otro resto que se vio. */
+const SIGNO_ENTRECOMILLADO = /"([?!.,;:¿¡]+)"/g
+
+/**
+ * Deja el texto como para mandárselo a una persona. Devuelve el mismo
+ * string si no había nada que limpiar, así quien llama puede avisar solo
+ * cuando de verdad hubo que tocarlo.
+ */
+export function limpiarTextoParaElCliente(texto: string): string {
+  const limpio = texto
+    .replace(BASURA_DE_FORMATO, '')
+    .replace(SIGNO_ENTRECOMILLADO, '')
+    // Espacio que quedó colgando antes de un signo, y espacios dobles.
+    .replace(/ +([,.;:!?])/g, '$1')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim()
+  return limpio === texto ? texto : limpio
+}

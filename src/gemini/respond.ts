@@ -3,6 +3,7 @@ import type { EscalationReason } from '../db/escalations.js'
 import { withRetry } from '../utils/withRetry.js'
 import { withTimeout } from '../utils/withTimeout.js'
 import { generarContenido } from './client.js'
+import { limpiarTextoParaElCliente } from './sanidad.js'
 import { buildResponderSystemPrompt } from './prompts.js'
 
 const GEMINI_TIMEOUT_MS = 40000 // ver el porqué en agent/intake.ts
@@ -99,5 +100,13 @@ ${params.instruction}
 
   const text = response.text?.trim()
   if (!text) throw new Error('Gemini no devolvió texto en la redacción')
-  return text
+
+  // Esto sale tal cual al WhatsApp del cliente: mismo repaso que en
+  // recepción (ver gemini/sanidad.ts).
+  const limpio = limpiarTextoParaElCliente(text)
+  if (limpio !== text) {
+    console.warn(`Redacción: se limpió basura de formato en la respuesta. Venía: ${JSON.stringify(text)}`)
+  }
+  if (!limpio) throw new Error('La respuesta quedó vacía después de limpiarla')
+  return limpio
 }

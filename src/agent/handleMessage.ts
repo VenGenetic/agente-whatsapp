@@ -17,6 +17,7 @@ import { createEscalation, type EscalationReason } from '../db/escalations.js'
 import { interpretMessage, type InterpretedItem, type InterpretResult } from '../gemini/interpret.js'
 import { runIntake } from './intake.js'
 import { resumenParaElVendedor } from './intakeHandoff.js'
+import { nombreDePila } from './nombreDelCliente.js'
 import { correspondeSaludar, textoDeSaludo } from './saludos.js'
 import { encolarParaProcesar, mediaDeLaRafaga, textoDeLaRafaga, type MensajeEnRafaga } from './messageBuffer.js'
 import { draftReply } from '../gemini/respond.js'
@@ -453,7 +454,11 @@ async function handleProcessingFailure(
   phoneNumber: string,
   chatJid: string,
 ): Promise<void> {
-  const fallbackText = 'Uy, tuvimos un problema técnico procesando tu mensaje. Ya te escribe alguien del equipo para ayudarte.'
+  // Al cliente no le importa ni le sirve saber que fue "un problema
+  // técnico": eso es lenguaje de adentro, y encima suena a excusa. Lo
+  // único que necesita saber es que su mensaje no se perdió y que alguien
+  // de verdad lo va a atender -- que es lo que pasa: esto escala.
+  const fallbackText = 'Perdón, se me complicó por acá. Ya le paso tu mensaje a alguien del equipo para que te ayude.'
 
   await createEscalation({ conversationId, reason: 'other', messageSnapshot: '(falla técnica interna -- ver logs del servidor)' })
   await setConversationStatus(conversationId, 'escalated')
@@ -484,6 +489,7 @@ async function processIntakeMessage(
   const result = await runIntake({
     history,
     customerMessage,
+    nombreCliente: nombreDePila(parsed.pushName),
     image: parsed.contentType === 'image' && media ? media : undefined,
     audio: parsed.contentType === 'audio' && media ? media : undefined,
   })
@@ -573,7 +579,7 @@ async function processMessage(
   // responderle un saludo de bienvenida a un "hola" suelto sería tirar a
   // la basura el contexto de lo que ya nos había dicho.
   if (correspondeSaludar({ texto: customerMessage, tieneMedia: !!media, historial: history })) {
-    const saludo = textoDeSaludo()
+    const saludo = textoDeSaludo({ pushName: parsed.pushName })
     // Una respuesta instantánea delata al bot más que cualquier redacción.
     // Como acá no hubo llamada al modelo que demorara, se agrega la pausa
     // que habría tomado leer y escribir el saludo (sendAndLog suma la suya).

@@ -1,26 +1,26 @@
 /**
- * Comprueba las tres defensas de la recepción: cuándo se saluda sin gastar
- * una llamada al modelo, cómo se detecta que el modelo devolvió su
- * razonamiento en vez del dato, y qué se rescata cuando eso pasa igual.
+ * Comprueba las defensas de la recepción, todas nacidas de fallas reales
+ * vistas en pruebas contra gemini-3.6-flash. No toca WhatsApp, ni la base,
+ * ni Gemini: se puede correr cuando sea.
  *
- * No toca WhatsApp, ni la base, ni Gemini: se puede correr cuando sea.
- *
- * Existe porque las tres salieron de fallas reales vistas en pruebas
- * contra gemini-3.6-flash, y las tres son invisibles cuando se rompen --
- * el bot sigue contestando, solo que mal:
+ * Existe porque todas son invisibles cuando se rompen -- el bot sigue
+ * contestando, solo que mal:
  *
  *   - El saludo vuelve a costar una llamada por cada "hola", o peor: le
  *     contesta una bienvenida a alguien con quien ya se venía hablando.
+ *   - Se trata por "su nombre" a un perfil que se llama "Repuestos JP".
  *   - El razonamiento del modelo ("tanquePool/tank/tanque") se guarda como
  *     si fuera el repuesto, y llega al resumen del vendedor.
- *   - Se le manda el mensaje de "problema técnico" a un cliente por un
- *     campo sucio que se podía descartar.
+ *   - Le llega al cliente un "Buen###ísimo, 2019."
+ *   - Se le manda el mensaje de falla a alguien por un campo sucio que se
+ *     podía descartar.
  *
  * Uso: npm run verificar-recepcion
  */
 import { correspondeSaludar, esSaludoPuro, textoDeSaludo } from '../src/agent/saludos.js'
 import { rescatarLoLimpio } from '../src/agent/intake.js'
-import { campoContaminado } from '../src/gemini/sanidad.js'
+import { campoContaminado, limpiarTextoParaElCliente } from '../src/gemini/sanidad.js'
+import { nombreDePila } from '../src/agent/nombreDelCliente.js'
 
 let fallos = 0
 
@@ -134,6 +134,58 @@ function verificarSanidad(): void {
   )
 }
 
+function verificarNombre(): void {
+  console.log('\nDe qué perfiles de WhatsApp se puede sacar un nombre')
+  const casos: Array<[string | null, string | null]> = [
+    ['Andrés', 'Andrés'],
+    ['ANDRES PEREZ', 'Andres'],
+    ['juan carlos rodriguez', 'Juan'],
+    ['Sr. Ramón Vega', 'Ramón'],
+    ['Ma. Fernanda Loor', 'Fernanda'],
+    ['🔥Andres🔥', 'Andres'],
+    // Tratar por "su nombre" a un negocio es peor que no usar ninguno.
+    ['Repuestos JP', null],
+    ['Moto Center', null],
+    ['Taller El Rayo', null],
+    ['0987654321', null],
+    ['Dios es bueno todo el tiempo', null],
+    ['JP', null],
+    [null, null],
+  ]
+  for (const [perfil, esperado] of casos) {
+    esperar(`${JSON.stringify(perfil)} -> ${JSON.stringify(esperado)}`, nombreDePila(perfil), esperado)
+  }
+}
+
+function verificarTextoAlCliente(): void {
+  console.log('\nBasura de formato que el modelo mete en el texto del cliente')
+  esperar(
+    'el caso real visto en pruebas',
+    limpiarTextoParaElCliente('Buen###ísimo, 2019. "?"¿En qué color necesitas el tanque?'),
+    'Buenísimo, 2019. ¿En qué color necesitas el tanque?',
+  )
+  esperar(
+    'asteriscos de negrita fuera',
+    limpiarTextoParaElCliente('*Listo*, ¿de qué año es tu moto?'),
+    'Listo, ¿de qué año es tu moto?',
+  )
+  esperar(
+    'un mensaje sano no se toca',
+    limpiarTextoParaElCliente('Dale Andrés, ¿de qué año es tu Wolf 200?'),
+    'Dale Andrés, ¿de qué año es tu Wolf 200?',
+  )
+  esperar(
+    'los puntos suspensivos son legítimos',
+    limpiarTextoParaElCliente('Perfecto... ¿y de qué color?'),
+    'Perfecto... ¿y de qué color?',
+  )
+  esperar(
+    'las comillas de verdad se respetan',
+    limpiarTextoParaElCliente('¿Te referís al "tanque" o a las placas laterales?'),
+    '¿Te referís al "tanque" o a las placas laterales?',
+  )
+}
+
 function verificarRescate(): void {
   console.log('\nQué se rescata cuando el modelo insiste en ensuciar la respuesta')
 
@@ -181,7 +233,9 @@ function verificarRescate(): void {
 function main(): void {
   console.log('Verificando la recepción (no se manda ningún mensaje ni se consulta nada).')
   verificarSaludos()
+  verificarNombre()
   verificarSanidad()
+  verificarTextoAlCliente()
   verificarRescate()
 
   console.log('')
@@ -190,7 +244,7 @@ function main(): void {
     process.exitCode = 1
     return
   }
-  console.log('Todo bien: el saludo, la detección de basura y el rescate funcionan.')
+  console.log('Todo bien: saludo, nombre, detección de basura, limpieza y rescate.')
 }
 
 main()

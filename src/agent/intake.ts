@@ -6,6 +6,7 @@ import { getKnownModels } from '../matching/knownModels.js'
 import {
   campoContaminado,
   camposContaminados,
+  limpiarTextoParaElCliente,
   motivoDeCamposSucios,
   RespuestaInutilizable,
 } from '../gemini/sanidad.js'
@@ -183,6 +184,33 @@ dirías vos, de mostrador.
 - Nada de "un momento", "déjame revisar", "ya te confirmo": vos no revisás
   nada ni hacés seguimiento.
 
+## Trato
+
+Del otro lado hay alguien que se quedó sin moto y necesita la pieza. Eso
+es todo lo que hay que tener en la cabeza.
+
+- Si arriba te dicen cómo se llama, usalo UNA o dos veces en toda la
+  conversación, no en cada mensaje: "Dale Andrés, ¿de qué año es?". En
+  cada mensaje suena a vendedor de seguros, y peor todavía si el nombre
+  está mal. Si no te dieron ninguno, no inventes ni preguntes cómo se
+  llama: eso lo maneja el equipo.
+- Preguntar tres cosas seguidas se siente como un trámite. A partir de la
+  tercera pregunta, decí para qué la necesitás en cinco palabras: "¿De qué
+  año es? Así no te doy la pieza equivocada".
+- Si dice que no sabe algo, no lo dejes sintiéndose mal: "Tranquilo, con
+  la foto lo resolvemos" y seguí. Es normalísimo no saber el año de una
+  moto usada.
+- Si suena apurado ("lo necesito hoy", "urgente"), no le sumes preguntas
+  que no sean imprescindibles y decile que ya le pasás el dato al equipo.
+- Si en el historial ves que ya te había escrito antes o que ya te compró,
+  reconocelo en tres palabras ("¡Qué bueno tenerte de vuelta!") y seguí.
+  Sin exagerar y sin inventar compras que no viste.
+- Si algo salió mal de nuestro lado (se le contestó tarde, se le preguntó
+  algo dos veces), pedí disculpas UNA vez, corto y sin dramatizar, y
+  resolvé.
+- Cuando termine de darte los datos, agradecéselos. Le costó tiempo
+  contestarte.
+
 ## Preguntas que no podés contestar
 
 Envíos, costo de envío, formas de pago, horarios, ubicación, qué repuestos
@@ -196,13 +224,34 @@ REGLA DURA: mientras complete y needs_human sean false, next_question
 NUNCA puede venir vacío o null -- el cliente siempre tiene que recibir una
 respuesta.
 
-## Cuándo cerrar
+## Antes de cerrar: confirmá lo que entendiste
 
-- Con todos los datos obligatorios (y el color si aplica): complete =
-  true, next_question = null.
-- needs_human = true si pide hablar con una persona, se queja, pide
-  descuento, reclama por algo que compró o el tono suena enojado. Ahí no
-  sigas preguntando datos.
+Cuando ya tengas todos los datos, NO cierres todavía. Primero repetile en
+UNA línea lo que entendiste y preguntale si está bien:
+
+    Listo Andrés: tanque para Wolf 200 del 2019, en negro. ¿Está bien así?
+
+Este paso evita el error caro del negocio: una pieza pedida para el año o
+el color equivocado hace que el cliente venga al local al pedo, y muchas
+veces ya no se puede devolver. Treinta segundos acá valen más que
+cualquier otra cosa que hagas.
+
+En ese mensaje complete sigue en FALSE (todavía no está confirmado).
+
+Cuando el cliente confirma ("sí", "correcto", "dale", "exacto"): complete
+= true y next_question = null.
+
+Si en vez de confirmar te corrige, cambiá ese dato y volvé a confirmar,
+pero una sola vez más: si ya confirmaste dos veces, cerrá igual. Y si en
+el historial ves que ese resumen YA lo hiciste y el cliente contestó
+cualquier cosa que no sea una corrección, cerrá -- no lo hagas confirmar
+dos veces lo mismo.
+
+## Cuándo pasar a una persona
+
+needs_human = true si pide hablar con alguien, se queja, pide descuento,
+reclama por algo que compró o el tono suena enojado. Ahí no sigas
+preguntando datos.
 `.trim()
 }
 
@@ -238,6 +287,11 @@ function formatHistory(history: HistoryTurn[]): string {
 export async function runIntake(params: {
   history: HistoryTurn[]
   customerMessage: string
+  /**
+   * Nombre de pila del cliente, si el perfil de WhatsApp dio uno
+   * confiable (ver nombreDelCliente.ts). Null es lo normal, no un error.
+   */
+  nombreCliente?: string | null
   /** Foto de la pieza -- muy común en repuestos, el cliente la manda en vez de describirla. */
   image?: { base64: string; mimeType: string }
   /** Nota de voz -- se interpreta igual que si fuera texto. */
@@ -245,8 +299,7 @@ export async function runIntake(params: {
 }): Promise<IntakeResult> {
   const knownModels = await getKnownModels()
 
-  const prompt = `
-HISTORIAL DE LA CONVERSACIÓN:
+  const prompt = `${params.nombreCliente ? `El cliente se llama ${params.nombreCliente}.\n\n` : ''}HISTORIAL DE LA CONVERSACIÓN:
 ${formatHistory(params.history)}
 
 Último mensaje del cliente: "${params.customerMessage}"
@@ -337,9 +390,23 @@ ${formatHistory(params.history)}
       color: parsed.color ?? null,
     },
     complete: Boolean(parsed.complete),
-    nextQuestion: parsed.next_question ?? null,
+    nextQuestion: paraElCliente(parsed.next_question),
     needsHuman: Boolean(parsed.needs_human),
   }
+}
+
+/**
+ * La pregunta, lista para mandar. El modelo a veces le deja restos de
+ * formato adentro ("Buen###ísimo, 2019.") -- no es motivo para tirar una
+ * frase que por lo demás está bien, así que se repara y se avisa.
+ */
+function paraElCliente(texto: unknown): string | null {
+  if (typeof texto !== 'string' || !texto.trim()) return null
+  const limpio = limpiarTextoParaElCliente(texto)
+  if (limpio !== texto) {
+    console.warn(`Recepción: se limpió basura de formato en la pregunta. Venía: ${JSON.stringify(texto)}`)
+  }
+  return limpio || null
 }
 
 /**

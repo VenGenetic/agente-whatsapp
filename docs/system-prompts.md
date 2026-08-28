@@ -1169,3 +1169,61 @@ contestando, solo que mal -- así que hay una verificación que no toca
 WhatsApp, ni la base, ni Gemini: cuándo se saluda desde el banco, qué se
 reconoce como razonamiento filtrado (con los textos reales que se vieron)
 y qué sobrevive al rescate.
+
+### Habilidades de atención al cliente
+
+No son una descarga ni un paquete: son reglas en el prompt de recepción y
+código alrededor. Todas se probaron en conversaciones completas contra el
+modelo real.
+
+**Llamarlo por su nombre.** Lo único que hay es el `pushName` de WhatsApp,
+que muy seguido no es un nombre: es el negocio ("Repuestos JP"), un apodo
+con emojis, un teléfono o una frase de perfil. Y usarlo mal es MUCHO peor
+que no usarlo -- "Dale Repuestos JP, ¿de qué año es tu moto?" es
+exactamente el detalle por el que alguien se da cuenta de que habla con un
+robot. Por eso `nombreDelCliente.ts` va al revés de lo habitual: ante la
+duda, no se usa. Descarta perfiles con dígitos, con palabras de negocio,
+de más de tres palabras, y devuelve solo el nombre de pila capitalizado
+("ANDRES PEREZ" -> "Andres", "🔥Andres🔥" -> "Andres"). El prompt lo usa
+una o dos veces en toda la conversación, nunca en cada mensaje.
+
+**Confirmar antes de cerrar.** Cuando ya tiene todos los datos, el bot NO
+cierra: repite en una línea lo que entendió y pregunta si está bien.
+
+    CLIENTE  busco un filtro de aire para mi tekken 250
+    BOT      ¡Hola Andrés! Claro que sí, un filtro de aire para la Tekken
+             250. ¿De qué año es tu moto?
+    CLIENTE  2020
+    BOT      Listo Andrés: filtro de aire para Tekken 250 del 2020.
+             ¿Está bien así?
+    CLIENTE  no, es tekken evo
+    BOT      Entendido Andrés: filtro de aire para Tekken Evo del 2020.
+             ¿Está bien así?
+    CLIENTE  si esa
+
+Ese "no, es tekken evo" es la razón entera del paso. Sin él, el vendedor
+cotizaba el filtro de una Tekken 250 y el cliente venía al local al pedo.
+Un turno de más vale menos que una pieza equivocada, que muchas veces ya
+no se puede devolver. Se confirma como máximo dos veces y después cierra
+igual, para no quedar en un lazo.
+
+**Trato.** Reglas concretas, no adjetivos: bajarle el peso al que no sabe
+un dato ("Tranquilo, con la foto lo resolvemos" -- salió literal en la
+prueba), explicar para qué se pregunta a partir de la tercera pregunta
+("Así no te doy la pieza equivocada"), no sumarle preguntas a quien viene
+apurado, reconocer en tres palabras al que ya escribió antes, disculparse
+una sola vez y sin dramatizar, y agradecer los datos al final.
+
+**Cuando algo falla, hablarle como una persona.** El mensaje de respaldo
+decía "tuvimos un problema técnico procesando tu mensaje": lenguaje de
+adentro, y encima suena a excusa. Ahora dice "Perdón, se me complicó por
+acá. Ya le paso tu mensaje a alguien del equipo para que te ayude" -- que
+además es verdad, porque eso escala.
+
+**Reparar el texto en vez de tirarlo.** El modelo a veces incrusta restos
+de formato en la frase que va al cliente: se vio `Buen###ísimo, 2019.
+"?"¿En qué color necesitas el tanque?`. La frase está bien; lo que sobra
+son los numerales. Descartarla obligaría a otro viaje al modelo y, si
+insiste, a mandarle el mensaje de falla a alguien por unos caracteres de
+más. Se limpia y se manda (`limpiarTextoParaElCliente`), respetando los
+puntos suspensivos y las comillas de verdad.
