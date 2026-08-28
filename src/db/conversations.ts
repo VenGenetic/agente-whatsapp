@@ -362,7 +362,7 @@ export async function logOutboundMessage(
       // que no se puede perder.
       if ((error?.code === 'PGRST204' || error?.code === '42703') && message.agent && columnaAgenteDisponible) {
         console.warn(
-          'Falta la migración 0035 (agent_messages.agent): se registra el mensaje sin anotar qué agente lo escribió.',
+          'Falta la migración 0035 (agent_messages.agent): se registra el mensaje sin anotar qué agente lo escribió. Reiniciá el agente después de correrla.',
         )
         columnaAgenteDisponible = false
         ;({ data, error } = await supabase.from('agent_messages').insert(fila()).select('id').maybeSingle())
