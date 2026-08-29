@@ -3,6 +3,7 @@ import { config } from '../config.js'
 import {
   type ActionTaken,
   type AgenteQueEscribe,
+  activateConversationForIntake,
   getConversationState,
   getRecentHistory,
   lastReplyWasClarification,
@@ -21,6 +22,7 @@ import { interpretMessage, type InterpretedItem, type InterpretResult } from '..
 import { runIntake } from './intake.js'
 import { resumenParaElVendedor } from './intakeHandoff.js'
 import { nombreDePila } from './nombreDelCliente.js'
+import { isAutoActivationMessage } from './autoActivation.js'
 import { correspondeSaludar, textoDeSaludo } from './saludos.js'
 import { encolarParaProcesar, mediaDeLaRafaga, textoDeLaRafaga, type MensajeEnRafaga } from './messageBuffer.js'
 import { draftReply } from '../gemini/respond.js'
@@ -925,7 +927,7 @@ export async function handleIncomingMessage(sock: WASocket, msg: WAMessage): Pro
     return
   }
 
-  const conversation = await upsertConversation(parsed.phoneNumber, parsed.pushName, parsed.lid, parsed.chatJid)
+  let conversation = await upsertConversation(parsed.phoneNumber, parsed.pushName, parsed.lid, parsed.chatJid)
   await logInboundMessage(conversation.id, {
     contentType: parsed.contentType,
     body: parsed.body,
@@ -942,6 +944,17 @@ export async function handleIncomingMessage(sock: WASocket, msg: WAMessage): Pro
     whatsappMessageId: msg.key.id ?? null,
     contentType: parsed.contentType,
   })
+
+  // Los anuncios y botones de contacto de Meta llegan con esta frase
+  // prellenada. Para esos clientes el propio mensaje inicia la recepción:
+  // se habilita el chat antes del freno individual. Nunca se roba una
+  // conversación ya tomada por una persona o escalada.
+  if (isAutoActivationMessage(parsed.body)
+      && conversation.status !== 'escalated'
+      && conversation.status !== 'human_active') {
+    conversation = await activateConversationForIntake(conversation.id)
+    console.log(`Agente de recepción activado automáticamente en el chat #${conversation.id}.`)
+  }
 
   // Si ya está escalada o un humano tomó el hilo, el bot no contesta solo --
   // solo queda el log de arriba para que el humano tenga el contexto.

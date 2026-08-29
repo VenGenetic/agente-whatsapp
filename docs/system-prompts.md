@@ -1170,6 +1170,35 @@ WhatsApp, ni la base, ni Gemini: cuándo se saluda desde el banco, qué se
 reconoce como razonamiento filtrado (con los textos reales que se vieron)
 y qué sobrevive al rescate.
 
+### "Daytona 150" no es un modelo
+
+Los dos datos que la recepción SIEMPRE tiene que terminar sabiendo son el
+repuesto y el modelo. Y el modo más común de quedarse sin el segundo sin
+darse cuenta es este: el cliente dice "tengo una Daytona 150" y suena a
+que identificó su moto. No la identificó -- en esa cilindrada hay una
+docena de modelos y cada uno lleva piezas distintas.
+
+Está atajado en los dos lados, porque el prompt solo no alcanza:
+
+- En el prompt de recepción, la regla dice explícitamente que "Daytona
+  150", "una 200" o "300cc" son marca y cilindrada, no modelo.
+- En código, `soloCilindraje` (el campo `modelo` que llegó del modelo) y
+  `cilindrajeSinModelo` (el mensaje entero del cliente, cuando no nombra
+  ningún modelo de la lista) detectan el caso en
+  `enforceDaytonaIntake`: el modelo queda en `null`, la ficha NO se
+  cierra, y la cilindrada se guarda en `cilindraje` -- es un dato que el
+  cliente sí dio y volver a preguntárselo es exactamente lo que lo
+  cansa.
+
+La repregunta reconoce lo que dijo, nombra cuatro modelos concretos y
+ofrece la salida para el que no sabe: "Anotado, una Daytona 150. En esa
+cilindrada hay varios modelos y cada uno lleva piezas distintas: ¿cuál es
+el tuyo? Por ejemplo Wing Evo II, Tekken Evo, Dynamic Pro, GP-1. Si no lo
+tienes claro, mándame una foto de la moto o de la matrícula y te ayudo a
+ubicarlo". Si el modelo ya había redactado una pregunta que nombra
+opciones concretas (típico cuando miró una foto), esa gana: es más
+específica que la nuestra.
+
 ### Habilidades de atención al cliente
 
 No son una descarga ni un paquete: son reglas en el prompt de recepción y

@@ -509,3 +509,21 @@ export async function setConversationStatus(
     .eq('id', conversationId)
   if (error) throw error
 }
+
+/** Activa explÃ­citamente el agente de recepciÃ³n para un chat entrante. */
+export async function activateConversationForIntake(conversationId: number): Promise<ConversationRow> {
+  const { data, error } = await supabase
+    .from('agent_conversations')
+    .update({
+      bot_enabled: true,
+      selected_agent: 'intake',
+      status: 'bot_active',
+      etapa: 'new',
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', conversationId)
+    .select('id, status, bot_enabled, selected_agent')
+    .single()
+  if (error) throw error
+  return { id: data.id, status: data.status, botEnabled: Boolean(data.bot_enabled), selectedAgent: data.selected_agent }
+}

@@ -134,7 +134,16 @@ seguís con la pregunta que falte.
    Pedile una foto completa de la moto, de lado y con buena luz, para revisar
    si es la misma plataforma que un modelo Daytona vendido con otro nombre.
 3. modelo -- exacto (ej. "Wolf 200", "Tekken Evo", "Wing Evo 2").
-   Obligatorio.
+   Obligatorio, y es el nombre del modelo: "Daytona 150", "una 200",
+   "300cc" NO son modelos, son la marca y la cilindrada. En cada
+   cilindrada hay una docena de modelos con piezas distintas, así que
+   ahí modelo va en null, la cilindrada va en \`cilindraje\`, y preguntás
+   cuál es el modelo nombrando 4 opciones de la lista de abajo. Si no lo
+   sabe o duda, ofrecele mandar una foto de la moto, del emblema o de la
+   matrícula para identificarla entre los dos.
+
+   Junto con el repuesto, el modelo es lo que SIEMPRE hay que terminar
+   sabiendo: sin esos dos datos la ficha no sirve para cotizar.
 4. anio -- obligatorio. Importa porque hay modelos que cambiaron de diseño
    (Wing Evo cambió desde 2024). Si dice que no sabe (muy común en motos
    usadas), poné "no sabe" y seguí: el equipo lo resuelve con la foto o el
@@ -153,7 +162,9 @@ seguís con la pregunta que falte.
 6. cilindraje -- SOLO cuando el mismo modelo viene en varias
    cilindradas o versiones y eso cambia la pieza (ej. Wolf 200 y Wolf
    250). Si el cliente ya lo dijo dentro del modelo ("Tekken 250"), ya
-   lo tenés: no lo preguntes de nuevo. Si no cambia nada, dejalo en
+   lo tenés: no lo preguntes de nuevo. Si dijo la cilindrada sin el
+   modelo ("Daytona 150"), guardala igual acá -- es un dato que ya te
+   dio y no se le vuelve a preguntar. Si no cambia nada, dejalo en
    null.
 
 7. color -- SOLO si esa pieza viene en colores. Carrocería (tanque,

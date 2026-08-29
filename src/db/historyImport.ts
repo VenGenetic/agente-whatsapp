@@ -241,44 +241,46 @@ export async function syncContactNames(contacts: Array<Partial<Contact>>): Promi
  * en la app, así el ERP puede mostrar qué quedó sin atender.
  */
 export async function syncChatUnreadCounts(chats: Array<Partial<Chat>>): Promise<number> {
-  const wanted = new Map<string, number>()
+  const byPhone = new Map<string, number>()
+  const byLid = new Map<string, number>()
   for (const chat of chats) {
     const jid = chat.id
     if (!jid || jid === 'status@broadcast' || jid.endsWith('@g.us')) continue
     if (chat.unreadCount === undefined || chat.unreadCount === null) continue
-    const identifier = normalizePhoneNumber(jid.split('@')[0])
-    if (!identifier) continue
-    // Negativo = marcado como no leído a mano en la app (convención de
-    // WhatsApp). Se normaliza a 1 para que "hay algo sin leer" sea `> 0`.
-    wanted.set(identifier, chat.unreadCount < 0 ? 1 : chat.unreadCount)
+    const count = chat.unreadCount < 0 ? 1 : chat.unreadCount
+    const id = jid.split('@')[0]
+    if (jid.endsWith('@lid')) byLid.set(id, count)
+    else {
+      const phone = normalizePhoneNumber(id)
+      if (phone) byPhone.set(phone, count)
+    }
   }
-  if (wanted.size === 0) return 0
+  if (byPhone.size === 0 && byLid.size === 0) return 0
 
-  let updated = 0
-  for (const group of chunked([...wanted.keys()])) {
-    const { data, error } = await supabase
-      .from('agent_conversations')
-      .select('id, phone_number, unread_count, last_message_direction')
-      .in('phone_number', group)
+  const updates = new Map<number, { id: number; phone_number: string; unread_count: number }>()
+  const collect = (rows: Array<{ id: number; phone_number: string; lid?: string | null; unread_count: number; last_message_direction: string | null }>, wanted: Map<string, number>, key: (row: typeof rows[number]) => string | null) => {
+    for (const row of rows) {
+      const value = key(row)
+      if (!value || !wanted.has(value)) continue
+      const unread = row.last_message_direction === 'outbound' ? 0 : wanted.get(value)!
+      if (unread !== row.unread_count) updates.set(row.id, { id: row.id, phone_number: row.phone_number, unread_count: unread })
+    }
+  }
+  for (const group of chunked([...byPhone.keys()])) {
+    const { data, error } = await supabase.from('agent_conversations').select('id, phone_number, unread_count, last_message_direction').in('phone_number', group)
     if (error) throw error
-
-    const rows = (data ?? [])
-      .map((row) => ({
-        id: row.id,
-        phone_number: row.phone_number,
-        // La lista representa "espera respuesta del negocio". Si el
-        // último mensaje fue nuestro, un contador rezagado de WhatsApp no
-        // debe volver a mostrar el chat como no leído.
-        unread_count: row.last_message_direction === 'outbound' ? 0 : wanted.get(row.phone_number)!,
-      }))
-      .filter((row) => row.unread_count !== data?.find((actual) => actual.id === row.id)?.unread_count)
-    if (rows.length === 0) continue
-
-    const { error: upError } = await supabase.from('agent_conversations').upsert(rows, { onConflict: 'id' })
-    if (upError) throw upError
-    updated += rows.length
+    collect(data ?? [], byPhone, (row) => row.phone_number)
   }
-  return updated
+  for (const group of chunked([...byLid.keys()])) {
+    const { data, error } = await supabase.from('agent_conversations').select('id, phone_number, lid, unread_count, last_message_direction').in('lid', group)
+    if (error) throw error
+    collect(data ?? [], byLid, (row) => row.lid ?? null)
+  }
+  const rows = [...updates.values()]
+  if (rows.length === 0) return 0
+  const { error } = await supabase.from('agent_conversations').upsert(rows, { onConflict: 'id' })
+  if (error) throw error
+  return rows.length
 }
 
 /**

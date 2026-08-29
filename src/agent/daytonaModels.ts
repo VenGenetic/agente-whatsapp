@@ -8,10 +8,17 @@ export const DAYTONA_MODELS = [
   'Predator', 'Hunter 4', 'Commander',
 ] as const
 
+/**
+ * Las cilindradas de la l\u00ednea. Est\u00e1n ac\u00e1 y no sueltas adentro de la
+ * normalizaci\u00f3n porque el n\u00famero es justamente el dato que la gente
+ * confunde con el modelo: "una Daytona 150" no dice qu\u00e9 moto es.
+ */
+const CILINDRAJE = /\b(1[0258]0|170|180|200|202|250|290|300|370)\s*(?:cc|c\.c\.)?\b/
+
 export function normalizeDaytonaText(value: string): string {
   return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
     .replace(/\bdaytona\b/g, '').replace(/\b(?:moto|modelo)\b/g, '')
-    .replace(/\b(?:1[0258]0|170|180|200|202|250|290|300|370)\s*(?:cc|c\.c\.)?\b/g, '')
+    .replace(new RegExp(CILINDRAJE.source, 'g'), '')
     .replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ')
 }
 
@@ -70,9 +77,50 @@ function nearestModels(value: string, limit = 4): string[] {
 
 const EXAMPLES = ['Wing Evo II', 'Tekken Evo', 'Dynamic Pro', 'GP-1', 'Shark 1', 'Wolf Evolution']
 
-export function daytonaModelQuestion(customerText: string, invalidModel?: string | null): string {
+/**
+ * "Daytona 150", "una 200", "moto 300cc": marca y/o cilindrada, ningún
+ * modelo. Devuelve la cilindrada (para no perder el único dato que sí
+ * dio) o null si el texto trae algo más que eso.
+ *
+ * Es el caso más común de la vereda: el cliente cree que "Daytona 150"
+ * identifica su moto, y en esa cilindrada hay una docena de modelos
+ * distintos con piezas distintas.
+ */
+export function soloCilindraje(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const match = value.match(CILINDRAJE)
+  if (!match) return null
+  return normalizeDaytonaText(value) === '' ? match[1] : null
+}
+
+/**
+ * Lo mismo, pero sobre el mensaje entero del cliente ("hola, tengo una
+ * daytona 150, busco el tanque"): hay cilindrada y no hay ningún nombre
+ * de modelo en ninguna parte de la frase.
+ */
+export function cilindrajeSinModelo(text: unknown): string | null {
+  if (typeof text !== 'string') return null
+  const match = text.match(CILINDRAJE)
+  if (!match) return null
+  const resto = normalizeDaytonaText(text)
+  const nombraUnModelo = resto !== '' && [...aliases.keys()]
+    .some((alias) => new RegExp(`\\b${alias}\\b`).test(resto))
+  return nombraUnModelo ? null : match[1]
+}
+
+export function daytonaModelQuestion(
+  customerText: string,
+  invalidModel?: string | null,
+  cilindraje?: string | null,
+): string {
   if (/\b(no (?:se|sé|recuerdo|conozco)|ni idea|no sabria|no sabría)\b/i.test(customerText)) {
     return `¿Será alguno de estos modelos Daytona: ${EXAMPLES.join(', ')}? Si ninguno te suena, envíame una foto de la moto o de su matrícula y te ayudamos a identificarla.`
+  }
+  // La cilindrada sola no alcanza, pero es un dato: se le reconoce y se
+  // le pide lo que falta, en vez de preguntar el modelo de cero como si
+  // no hubiera dicho nada.
+  if (cilindraje) {
+    return `Anotado, una Daytona ${cilindraje}. En esa cilindrada hay varios modelos y cada uno lleva piezas distintas: ¿cuál es el tuyo? Por ejemplo ${EXAMPLES.slice(0, 4).join(', ')}. Si no lo tienes claro, mándame una foto de la moto o de la matrícula y te ayudo a ubicarlo.`
   }
   if (invalidModel) return `No pude identificar con seguridad “${invalidModel}”. ¿Será alguno de estos modelos Daytona: ${nearestModels(invalidModel).join(', ')}?`
   return `¿Qué modelo Daytona tienes? Por ejemplo: ${EXAMPLES.slice(0, 4).join(', ')}. Si no lo sabes, dímelo y te muestro más opciones.`
@@ -94,15 +142,26 @@ export function enforceDaytonaIntake(
   }
   const rawModel = typeof data.modelo === 'string' ? data.modelo.trim() : ''
   const canonical = canonicalDaytonaModel(rawModel)
+  // "Daytona 150" no es un modelo. Se guarda la cilindrada, se deja el
+  // modelo vacío y se vuelve a preguntar: sin el modelo exacto el
+  // vendedor cotiza a ciegas entre una docena de motos de esa cilindrada.
+  const cilindrada = soloCilindraje(rawModel) ?? (rawModel ? null : cilindrajeSinModelo(customerText))
+  // Una pregunta del modelo que ya nombra opciones concretas (típico
+  // cuando miró una foto) es mejor que cualquiera de las nuestras.
+  const preguntaConOpciones = typeof data.next_question === 'string' && data.next_question.length <= 300
+    && DAYTONA_MODELS.some((model) => data.next_question.toLowerCase().includes(model.toLowerCase()))
+    ? data.next_question
+    : null
+  if (!canonical && cilindrada) {
+    return { ...data, marca: 'Daytona', modelo: null,
+      cilindraje: data.cilindraje ?? cilindrada, complete: false,
+      next_question: preguntaConOpciones ?? daytonaModelQuestion(customerText, null, cilindrada) }
+  }
   if (rawModel && !canonical) return { ...data, marca: 'Daytona', modelo: null, complete: false,
     next_question: daytonaModelQuestion(customerText, rawModel) }
   if (!canonical) {
-    const proposed = typeof data.next_question === 'string' && data.next_question.length <= 300
-      && DAYTONA_MODELS.some((model) => data.next_question.toLowerCase().includes(model.toLowerCase()))
-      ? data.next_question
-      : daytonaModelQuestion(customerText)
     return { ...data, marca: hasBrand ? 'Daytona' : data.marca ?? null, modelo: null,
-      complete: false, next_question: proposed }
+      complete: false, next_question: preguntaConOpciones ?? daytonaModelQuestion(customerText) }
   }
   return { ...data, marca: 'Daytona', modelo: canonical, modelo_daytona_equivalente: null }
 }

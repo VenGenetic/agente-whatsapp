@@ -19,7 +19,13 @@
  */
 import { correspondeSaludar, esSaludoPuro, textoDeSaludo } from '../src/agent/saludos.js'
 import { rescatarLoLimpio } from '../src/agent/intake.js'
-import { canonicalDaytonaModel, enforceDaytonaIntake, isDaytonaBrand } from '../src/agent/daytonaModels.js'
+import {
+  canonicalDaytonaModel,
+  cilindrajeSinModelo,
+  enforceDaytonaIntake,
+  isDaytonaBrand,
+  soloCilindraje,
+} from '../src/agent/daytonaModels.js'
 import { campoContaminado, limpiarTextoParaElCliente, textoCorrupto } from '../src/gemini/sanidad.js'
 import { nombreDePila } from '../src/agent/nombreDelCliente.js'
 import { decidirAgente } from '../src/agent/handleMessage.js'
@@ -330,6 +336,39 @@ function verificarModelosDaytona(): void {
   const razonada = enforceDaytonaIntake({ marca: 'Daytona', modelo: null, complete: false,
     next_question: 'Por la forma parece Tekken Evo o Tekken Discovery. ¿Cuál de esas dice en el emblema?' }, 'mandé la foto')
   esperar('conserva opciones razonadas desde una foto', /Tekken Discovery/.test(razonada.next_question), true)
+
+  // El error caro de todos los días: el cliente cree que "Daytona 150"
+  // identifica su moto. En esa cilindrada hay una docena de modelos con
+  // piezas distintas -- si la ficha se cierra así, el vendedor cotiza a
+  // ciegas.
+  console.log('\nLa cilindrada sola no es un modelo')
+  esperar('"Daytona 150" es cilindrada, no modelo', soloCilindraje('Daytona 150'), '150')
+  esperar('"200 cc" también', soloCilindraje('200 cc'), '200')
+  esperar('"Tekken 250" sí trae modelo', soloCilindraje('Tekken 250'), null)
+  esperar('"Adventure 300R" es un modelo real', soloCilindraje('Adventure 300R'), null)
+  esperar(
+    'el mensaje entero sin modelo deja la cilindrada',
+    cilindrajeSinModelo('hola, tengo una daytona 150, busco el tanque'),
+    '150',
+  )
+  esperar(
+    'si el mensaje nombra un modelo no es este caso',
+    cilindrajeSinModelo('busco tanque para mi tekken evo 250'),
+    null,
+  )
+
+  const soloCC = enforceDaytonaIntake({ marca: 'Daytona', modelo: 'Daytona 150', repuesto: 'tanque', complete: true },
+    'necesito un tanque para mi daytona 150')
+  esperar('no cierra la ficha con la cilindrada sola', soloCC.complete, false)
+  esperar('y no guarda "Daytona 150" como modelo', soloCC.modelo, null)
+  esperar('conserva la cilindrada que sí dio', soloCC.cilindraje, '150')
+  esperar('pregunta el modelo exacto nombrando opciones', /150.*Wing Evo II/s.test(soloCC.next_question), true)
+  esperar('y ofrece ayuda con una foto', /foto/i.test(soloCC.next_question), true)
+
+  const ccEnElMensaje = enforceDaytonaIntake({ marca: 'Daytona', modelo: null, repuesto: 'espejos', complete: false },
+    'busco espejos para una daytona 300')
+  esperar('la cilindrada del mensaje también se rescata', ccEnElMensaje.cilindraje, '300')
+  esperar('y se pregunta por el modelo de esa cilindrada', /Daytona 300/.test(ccEnElMensaje.next_question), true)
 }
 
 function main(): void {
