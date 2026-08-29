@@ -66,7 +66,10 @@ function comoFila(datos: FichaDeRecepcion): Record<string, unknown> {
     color: datos.color,
     posicion: datos.posicion,
     cilindraje: datos.cilindraje,
-    observaciones: datos.observaciones,
+    observaciones: [
+      datos.observaciones,
+      datos.modeloDaytonaEquivalente ? `Equivalente Daytona por foto: ${datos.modeloDaytonaEquivalente}` : null,
+    ].filter(Boolean).join(' | ') || null,
     foto_recibida: datos.fotoRecibida,
     updated_at: new Date().toISOString(),
   }

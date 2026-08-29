@@ -78,10 +78,20 @@ export function daytonaModelQuestion(customerText: string, invalidModel?: string
   return `¿Qué modelo Daytona tienes? Por ejemplo: ${EXAMPLES.slice(0, 4).join(', ')}. Si no lo sabes, dímelo y te muestro más opciones.`
 }
 
-export function enforceDaytonaIntake(data: Record<string, any>, customerText: string): Record<string, any> {
+export function enforceDaytonaIntake(
+  data: Record<string, any>,
+  customerText: string,
+  options: { currentPhotoReceived?: boolean } = {},
+): Record<string, any> {
   const hasBrand = typeof data.marca === 'string' && data.marca.trim().length > 0
-  if (hasBrand && !isDaytonaBrand(data.marca)) return { ...data, marca: null, modelo: null, complete: false,
-    next_question: 'Por el momento atendemos solicitudes de repuestos para motos Daytona. ¿Tu moto es Daytona?' }
+  if (hasBrand && !isDaytonaBrand(data.marca)) {
+    const equivalent = canonicalDaytonaModel(data.modelo_daytona_equivalente)
+    if (!options.currentPhotoReceived) return { ...data, modelo_daytona_equivalente: null, complete: false,
+      next_question: `Para revisar si tu ${data.marca}${data.modelo ? ` ${data.modelo}` : ''} equivale a un modelo Daytona, envíame una foto completa de la moto, de lado y con buena luz.` }
+    if (!equivalent) return { ...data, modelo_daytona_equivalente: null, complete: false,
+      next_question: 'Con esa foto no puedo confirmar el equivalente Daytona. ¿Puedes enviarme una foto completa de la moto de lado, donde se vean el tanque, faro y carenado?' }
+    return { ...data, modelo_daytona_equivalente: equivalent }
+  }
   const rawModel = typeof data.modelo === 'string' ? data.modelo.trim() : ''
   const canonical = canonicalDaytonaModel(rawModel)
   if (rawModel && !canonical) return { ...data, marca: 'Daytona', modelo: null, complete: false,
@@ -94,5 +104,5 @@ export function enforceDaytonaIntake(data: Record<string, any>, customerText: st
     return { ...data, marca: hasBrand ? 'Daytona' : data.marca ?? null, modelo: null,
       complete: false, next_question: proposed }
   }
-  return { ...data, marca: 'Daytona', modelo: canonical }
+  return { ...data, marca: 'Daytona', modelo: canonical, modelo_daytona_equivalente: null }
 }

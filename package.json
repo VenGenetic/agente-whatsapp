@@ -6,7 +6,7 @@
   "description": "Agente de WhatsApp para repuestos usados de auto, integrado a sistema_erp via Supabase.",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "start": "tsx src/index.ts",
+    "start": "node scripts/start-agent.cjs",
     "typecheck": "tsc --noEmit",
     "verify": "tsx scripts/verify-setup.ts",
     "reset-chat": "tsx scripts/reset-conversation.ts",

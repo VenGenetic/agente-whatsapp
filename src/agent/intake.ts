@@ -1,6 +1,6 @@
 import { Type, type Schema } from '@google/genai'
 import { config } from '../config.js'
-import { DAYTONA_MODELS, enforceDaytonaIntake, normalizeDaytonaText } from './daytonaModels.js'
+import { DAYTONA_MODELS, enforceDaytonaIntake, isDaytonaBrand, normalizeDaytonaText } from './daytonaModels.js'
 import type { HistoryTurn } from '../db/conversations.js'
 import { getLearnedDaytonaAliases, observeDaytonaModelAlias } from '../db/daytonaModelLearning.js'
 import { generarContenido } from '../gemini/client.js'
@@ -52,6 +52,8 @@ export type IntakeData = {
   repuesto: string | null
   marca: string | null
   modelo: string | null
+  /** Modelo Daytona visualmente equivalente cuando la moto es de otra marca. */
+  modeloDaytonaEquivalente: string | null
   anio: string | null
   color: string | null
   /**
@@ -89,6 +91,7 @@ const RESPONSE_SCHEMA: Schema = {
     repuesto: { type: Type.STRING, nullable: true },
     marca: { type: Type.STRING, nullable: true },
     modelo: { type: Type.STRING, nullable: true },
+    modelo_daytona_equivalente: { type: Type.STRING, nullable: true },
     anio: { type: Type.STRING, nullable: true },
     color: { type: Type.STRING, nullable: true },
     color_aplica: { type: Type.BOOLEAN },
@@ -123,11 +126,13 @@ seguís con la pregunta que falte.
 
 1. repuesto -- la pieza (ej. "filtro de aire", "tanque", "espejos").
    Obligatorio.
-2. marca -- el negocio vende casi solo DAYTONA. Si el cliente ya dio un
+2. marca -- el negocio vende principalmente DAYTONA. Si el cliente ya dio un
    modelo, poné "Daytona" y NO preguntes: "¿de qué marca es tu Dynamic
    Pro?" queda ridículo. Preguntala solo si no dio ningún modelo. Si
-   nombra otra marca (Shineray, Axxo, Tuko...), explicá que por el momento
-   solo atendemos Daytona y confirmá si su moto es Daytona.
+   nombra otra marca (Shineray, Axxo, Tuko...), CONSERVÁ esa marca y el
+   modelo que diga. No lo rechaces ni le preguntes si en realidad es Daytona.
+   Pedile una foto completa de la moto, de lado y con buena luz, para revisar
+   si es la misma plataforma que un modelo Daytona vendido con otro nombre.
 3. modelo -- exacto (ej. "Wolf 200", "Tekken Evo", "Wing Evo 2").
    Obligatorio.
 4. anio -- obligatorio. Importa porque hay modelos que cambiaron de diseño
@@ -168,6 +173,15 @@ vuelvas a preguntar y no impide que complete sea true.
 Los obligatorios son repuesto, marca, modelo y año. Posición, cilindraje
 y color se piden SOLO cuando aplican a esa pieza -- pedirlos igual
 convierte la conversación en un interrogatorio, y el cliente se va.
+
+Si la marca NO es Daytona, también es obligatorio identificar
+\`modelo_daytona_equivalente\` a partir de una foto visible en ESTA llamada.
+Nunca lo deduzcas solo por el nombre comercial. Hasta recibir y analizar la
+foto, complete debe ser false aunque los demás datos estén completos. Si la
+foto no permite distinguirlo, dejalo null y pedí otra foto completa de lado
+donde se vean tanque, faro y carenado. Si coincide claramente, guardá el
+nombre oficial Daytona en \`modelo_daytona_equivalente\` y conservá en
+\`marca\` y \`modelo\` los datos originales del cliente.
 
 Cada dato va en SU campo, nunca varios juntos en uno. \`repuesto\` lleva
 únicamente el nombre de la pieza ("tanque"), nunca la marca, el modelo, el
@@ -428,6 +442,7 @@ ${formatHistory(params.history)}
             repuesto: datos.repuesto,
             marca: datos.marca,
             modelo: datos.modelo,
+            modelo_daytona_equivalente: datos.modelo_daytona_equivalente,
             anio: datos.anio,
             color: datos.color,
             posicion: datos.posicion,
@@ -481,9 +496,10 @@ ${formatHistory(params.history)}
 
   const rawModel = typeof parsed.modelo === 'string' ? parsed.modelo.trim() : ''
   const learnedCanonical = rawModel ? learnedAliases.get(normalizeDaytonaText(rawModel)) : null
-  if (learnedCanonical) parsed.modelo = learnedCanonical
-  parsed = enforceDaytonaIntake(parsed, params.customerMessage)
-  if (rawModel && parsed.modelo && normalizeDaytonaText(rawModel) !== normalizeDaytonaText(parsed.modelo)) {
+  if (learnedCanonical && (!parsed.marca || isDaytonaBrand(parsed.marca))) parsed.modelo = learnedCanonical
+  parsed = enforceDaytonaIntake(parsed, params.customerMessage, { currentPhotoReceived: Boolean(params.image) })
+  if (rawModel && parsed.modelo && parsed.marca === 'Daytona'
+      && normalizeDaytonaText(rawModel) !== normalizeDaytonaText(parsed.modelo)) {
     await observeDaytonaModelAlias(normalizeDaytonaText(rawModel), parsed.modelo)
   }
 
@@ -492,6 +508,7 @@ ${formatHistory(params.history)}
       repuesto: parsed.repuesto ?? null,
       marca: parsed.marca ?? null,
       modelo: parsed.modelo ?? null,
+      modeloDaytonaEquivalente: parsed.modelo_daytona_equivalente ?? null,
       anio: parsed.anio ?? null,
       color: parsed.color ?? null,
       posicion: parsed.posicion ?? null,
@@ -541,6 +558,7 @@ export function rescatarLoLimpio(datos: Record<string, any>): Record<string, any
     ...datos,
     repuesto,
     modelo,
+    modelo_daytona_equivalente: limpio(datos.modelo_daytona_equivalente),
     marca: limpio(datos.marca),
     anio: limpio(datos.anio),
     color: limpio(datos.color),
@@ -565,6 +583,7 @@ export function formatIntakeSummary(data: IntakeData): string {
     `Modelo: ${data.modelo ?? '(no dijo)'}`,
     `Año: ${data.anio ?? '(no dijo)'}`,
   ]
+  if (data.modeloDaytonaEquivalente) lines.push(`Equivalente Daytona: ${data.modeloDaytonaEquivalente}`)
   // Los condicionales solo se muestran si aplican a esa pieza: una línea
   // "Posición: -" en la ficha de un filtro es ruido, no información.
   if (data.cilindraje) lines.push(`Cilindraje: ${data.cilindraje}`)

@@ -316,7 +316,15 @@ function verificarModelosDaytona(): void {
   esperar('rechaza un modelo inexistente', canonicalDaytonaModel('Inventada 500'), null)
   const otraMarca = enforceDaytonaIntake({ marca: 'Shineray', modelo: 'XY 200', complete: true }, 'es Shineray')
   esperar('otra marca no completa la ficha', otraMarca.complete, false)
-  esperar('otra marca borra el modelo inválido', otraMarca.modelo, null)
+  esperar('otra marca conserva su modelo original', otraMarca.modelo, 'XY 200')
+  esperar('otra marca pide una foto para comparar', /foto completa/i.test(otraMarca.next_question), true)
+  const otraMarcaConFoto = enforceDaytonaIntake({ marca: 'Shineray', modelo: 'XY 200',
+    modelo_daytona_equivalente: 'Tekken Evo', complete: true }, 'adjunto foto', { currentPhotoReceived: true })
+  esperar('la foto permite guardar el equivalente Daytona', otraMarcaConFoto.modelo_daytona_equivalente, 'Tekken Evo')
+  esperar('la equivalencia conserva la marca original', otraMarcaConFoto.marca, 'Shineray')
+  const fotoAmbigua = enforceDaytonaIntake({ marca: 'Tuko', modelo: 'CR3 Max 200', complete: true },
+    'adjunto foto', { currentPhotoReceived: true })
+  esperar('una foto ambigua no inventa equivalencia', fotoAmbigua.complete, false)
   const noSabe = enforceDaytonaIntake({ marca: 'Daytona', modelo: null, complete: false }, 'no sé el modelo')
   esperar('si no sabe recibe opciones', /Wing Evo II/.test(noSabe.next_question), true)
   const razonada = enforceDaytonaIntake({ marca: 'Daytona', modelo: null, complete: false,
