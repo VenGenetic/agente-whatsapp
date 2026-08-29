@@ -1,6 +1,7 @@
 import type { WASocket } from '@whiskeysockets/baileys'
 import { config } from '../config.js'
 import { getRecentHistory, logOutboundMessage } from '../db/conversations.js'
+import { agentesEncendidos, isBotAutoReplyEnabled, puedeResponderAhora } from '../db/settings.js'
 import { supabase } from '../supabaseClient.js'
 import { humanDelay } from '../utils/humanDelay.js'
 import { toChatJid, toWhatsAppJid } from '../utils/phone.js'
@@ -59,7 +60,13 @@ export async function runProactiveIntakeJob(sock: WASocket): Promise<void> {
   // mandar nada, no marca `intake_started_at`, así que cuando se
   // reactive el agente estos chats siguen en la cola en vez de haber
   // quedado "arrancados" sin que el cliente recibiera nunca el saludo.
-  if (config.outboundMode !== 'full') return
+  if (config.outboundMode !== 'full' || config.botKillSwitch) return
+  if (!(await isBotAutoReplyEnabled())) return
+  const encendidos = await agentesEncendidos({
+    recepcion: config.agentMode === 'intake',
+    ventas: config.agentMode === 'full',
+  })
+  if (!encendidos.recepcion) return
 
   const pending = await getPendingIntakes(config.proactiveIntakeBatchSize)
   if (pending.length === 0) return
@@ -83,6 +90,9 @@ export async function runProactiveIntakeJob(sock: WASocket): Promise<void> {
         history,
         customerMessage: lastInbound?.body ?? '(el cliente escribió antes, sin texto)',
       })
+
+      // El permiso pudo cambiar durante la llamada al modelo.
+      if (!(await puedeResponderAhora(conversation.id, 'intake'))) continue
 
       // Si con el historial ya alcanza, no hay nada que preguntar: se avisa
       // al dueño con el resumen y no se le escribe al cliente (mandarle un
@@ -113,6 +123,7 @@ export async function runProactiveIntakeJob(sock: WASocket): Promise<void> {
       await logOutboundMessage(conversation.id, {
         body: result.nextQuestion,
         actionTaken: 'asked_clarification',
+        agent: 'intake',
         // Sin el id, el eco `fromMe` de este mismo envío entraría como un
         // mensaje aparte y quedaría duplicado en el historial.
         whatsappMessageId: sent?.key?.id ?? null,

@@ -50,6 +50,8 @@ type Rafaga = {
 }
 
 const rafagas = new Map<number, Rafaga>()
+/** Procesamiento completo en curso por chat (incluye Gemini y envío). */
+const procesamientos = new Map<number, Promise<void>>()
 
 /**
  * Junta el mensaje con los que ya estaban esperando de esa conversación y
@@ -72,9 +74,20 @@ export function encolarParaProcesar(
 
   const disparar = () => {
     rafagas.delete(conversationId)
-    procesar(mensajes).catch((err) =>
-      console.error(`Error procesando la ráfaga de la conversación ${conversationId}:`, err),
-    )
+    // Una segunda ráfaga puede cerrarse mientras Gemini sigue trabajando
+    // en la primera. Se encadena detrás para que nunca haya dos respuestas
+    // simultáneas ni historial desactualizado en el mismo chat.
+    const anterior = procesamientos.get(conversationId) ?? Promise.resolve()
+    const actual = anterior
+      .catch(() => undefined)
+      .then(() => procesar(mensajes))
+      .catch((err) => {
+        console.error(`Error procesando la ráfaga de la conversación ${conversationId}:`, err)
+      })
+    procesamientos.set(conversationId, actual)
+    actual.finally(() => {
+      if (procesamientos.get(conversationId) === actual) procesamientos.delete(conversationId)
+    })
   }
 
   // Lo que quede del tope, para no pasarse esperando a alguien que escribe

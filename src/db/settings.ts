@@ -1,4 +1,5 @@
 import { supabase } from '../supabaseClient.js'
+import { config } from '../config.js'
 
 // Cache: el ajuste se lee en CADA mensaje entrante, así que sin cache un
 // negocio con mucho tráfico haría una consulta por mensaje. 60s mantiene
@@ -78,4 +79,50 @@ export async function agentesEncendidos(respaldo: AgentesEncendidos): Promise<Ag
   }
   cachedAgentes = { valor, fetchedAt: Date.now() }
   return valor
+}
+
+/**
+ * Ultimo candado, leido SIN cache inmediatamente antes de enviar.
+ *
+ * Entre que empieza Gemini y termina pueden pasar varios segundos. En ese
+ * rato una persona puede apagar/tomar el chat o el negocio puede apagar el
+ * maestro. Esta comprobacion evita que salga una respuesta ya calculada
+ * usando un permiso viejo.
+ */
+export async function puedeResponderAhora(
+  conversationId: number,
+  agente: 'intake' | 'sales',
+  options?: { permitirEscalado?: boolean },
+): Promise<boolean> {
+  if (config.botKillSwitch || config.outboundMode !== 'full') return false
+
+  const [ajuste, conversacion] = await Promise.all([
+    supabase
+      .from('agent_settings')
+      .select('bot_auto_reply_enabled, intake_agent_enabled, sales_agent_enabled')
+      .eq('id', 1)
+      .maybeSingle(),
+    supabase
+      .from('agent_conversations')
+      .select('bot_enabled, selected_agent, status')
+      .eq('id', conversationId)
+      .maybeSingle(),
+  ])
+
+  if (ajuste.error || conversacion.error) {
+    console.error(
+      'No se pudo confirmar el permiso justo antes de responder:',
+      ajuste.error?.message ?? conversacion.error?.message,
+    )
+    return false
+  }
+
+  const s = ajuste.data
+  const c = conversacion.data
+  if (!s?.bot_auto_reply_enabled || !c?.bot_enabled || c.selected_agent !== agente) return false
+  if (agente === 'intake' && !s.intake_agent_enabled) return false
+  if (agente === 'sales' && !s.sales_agent_enabled) return false
+  if (c.status === 'human_active' || c.status === 'closed') return false
+  if (c.status === 'escalated' && !options?.permitirEscalado) return false
+  return true
 }

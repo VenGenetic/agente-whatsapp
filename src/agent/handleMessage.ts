@@ -13,7 +13,7 @@ import {
   type HistoryTurn,
 } from '../db/conversations.js'
 import { registerLostDemand, registerProductDemand } from '../db/demands.js'
-import { agentesEncendidos, isBotAutoReplyEnabled, type AgentesEncendidos } from '../db/settings.js'
+import { agentesEncendidos, isBotAutoReplyEnabled, puedeResponderAhora, type AgentesEncendidos } from '../db/settings.js'
 import { cambiarEtapa, etapaCerrada, etapaDe, type Etapa } from '../db/etapas.js'
 import { guardarBorrador, marcarFichaLista, type FichaDeRecepcion } from '../db/fichaDeRecepcion.js'
 import { createEscalation, type EscalationReason } from '../db/escalations.js'
@@ -180,6 +180,11 @@ async function sendAndLog(
   },
 ): Promise<void> {
   await humanDelay()
+  const agente = extra.agent === 'intake' ? 'intake' : 'sales'
+  if (!(await puedeResponderAhora(conversationId, agente, { permitirEscalado: extra.actionTaken === 'escalated' }))) {
+    console.log(`Respuesta ${extra.actionTaken} cancelada: el permiso del chat #${conversationId} cambio mientras se procesaba.`)
+    return
+  }
   const sent = await sock.sendMessage(chatJid, { text })
   await logOutboundMessage(conversationId, { body: text, whatsappMessageId: sent?.key?.id ?? null, ...extra })
 }
@@ -194,6 +199,10 @@ async function sendProductPhotoAndLog(
   matchConfidence: number,
 ): Promise<void> {
   await humanDelay()
+  if (!(await puedeResponderAhora(conversationId, 'sales'))) {
+    console.log(`Foto/respuesta cancelada: el permiso del chat #${conversationId} cambio mientras se procesaba.`)
+    return
+  }
   const sentId = await sendTextOrPhoto(sock, chatJid, text, imageUrl)
   await logOutboundMessage(conversationId, {
     body: text,
@@ -560,6 +569,12 @@ async function handleProcessingFailure(
     actor: 'system',
     motivo: 'Falla técnica al procesar el mensaje',
   })
+  const actual = await getConversationState(conversationId)
+  const agente = actual?.selectedAgent
+  if (!agente || !(await puedeResponderAhora(conversationId, agente, { permitirEscalado: true }))) {
+    console.log(`Fallback tecnico cancelado: el permiso del chat #${conversationId} cambio mientras se procesaba.`)
+    return
+  }
   const sentFallback = await sock.sendMessage(chatJid, { text: fallbackText })
   await logOutboundMessage(conversationId, {
     body: fallbackText,

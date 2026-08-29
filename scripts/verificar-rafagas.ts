@@ -98,6 +98,39 @@ async function main(): Promise<void> {
   esperar('tres mensajes seguidos se procesan UNA sola vez', vueltas, 1)
   esperar('y llegan los tres, en orden', recibidos, ['hola', 'busco un cdi', 'para wolf 200'])
 
+  // 5) Si llega otra ráfaga mientras la primera sigue trabajando, la
+  // segunda espera. Antes podían quedar dos llamadas a Gemini y dos
+  // respuestas simultáneas para el mismo cliente.
+  console.log('\nProcesamiento exclusivo por conversación')
+  const orden: string[] = []
+  let liberarPrimera!: () => void
+  const primeraTerminada = new Promise<void>((resolve) => { liberarPrimera = resolve })
+  let arrancoPrimera!: () => void
+  const primeraArranco = new Promise<void>((resolve) => { arrancoPrimera = resolve })
+  let terminoSegunda!: () => void
+  const segundaTermino = new Promise<void>((resolve) => { terminoSegunda = resolve })
+  const convExclusiva = CONV + 1
+
+  encolarParaProcesar(convExclusiva, mensaje('primera'), async () => {
+    orden.push('inicio-1')
+    arrancoPrimera()
+    await primeraTerminada
+    orden.push('fin-1')
+  })
+  await primeraArranco
+  encolarParaProcesar(convExclusiva, mensaje('segunda'), async () => {
+    orden.push('inicio-2')
+    orden.push('fin-2')
+    terminoSegunda()
+  })
+  // La segunda ráfaga alcanza a cerrar, pero no debe arrancar mientras la
+  // primera sigue bloqueada.
+  await new Promise((resolve) => setTimeout(resolve, 7500))
+  esperar('la segunda espera mientras la primera procesa', orden, ['inicio-1'])
+  liberarPrimera()
+  await segundaTermino
+  esperar('después se procesan estrictamente en orden', orden, ['inicio-1', 'fin-1', 'inicio-2', 'fin-2'])
+
   console.log('')
   if (fallos > 0) {
     console.log(`${fallos} comprobación(es) fallaron.`)
