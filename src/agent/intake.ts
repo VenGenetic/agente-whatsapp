@@ -1,8 +1,9 @@
 import { Type, type Schema } from '@google/genai'
 import { config } from '../config.js'
+import { DAYTONA_MODELS, enforceDaytonaIntake, normalizeDaytonaText } from './daytonaModels.js'
 import type { HistoryTurn } from '../db/conversations.js'
+import { getLearnedDaytonaAliases, observeDaytonaModelAlias } from '../db/daytonaModelLearning.js'
 import { generarContenido } from '../gemini/client.js'
-import { getKnownModels } from '../matching/knownModels.js'
 import {
   campoContaminado,
   camposContaminados,
@@ -102,8 +103,9 @@ const RESPONSE_SCHEMA: Schema = {
   required: ['complete', 'needs_human', 'color_aplica', 'posicion_aplica'],
 }
 
-function buildIntakeSystemPrompt(knownModels: string[]): string {
-  const modelsBlock = knownModels.length > 0 ? knownModels.join(', ') : '(sin lista cargada todavía)'
+function buildIntakeSystemPrompt(learnedAliases: Map<string, string>): string {
+  const modelsBlock = DAYTONA_MODELS.join(', ')
+  const learnedBlock = [...learnedAliases].map(([alias, model]) => `${alias} = ${model}`).join(', ') || '(ninguno todavía)'
 
   return `
 Sos el módulo de RECEPCIÓN de ${config.businessName}, negocio de repuestos
@@ -124,7 +126,8 @@ seguís con la pregunta que falte.
 2. marca -- el negocio vende casi solo DAYTONA. Si el cliente ya dio un
    modelo, poné "Daytona" y NO preguntes: "¿de qué marca es tu Dynamic
    Pro?" queda ridículo. Preguntala solo si no dio ningún modelo. Si
-   nombra otra marca (Shineray, Axxo, Tuko...), respetá la que dijo.
+   nombra otra marca (Shineray, Axxo, Tuko...), explicá que por el momento
+   solo atendemos Daytona y confirmá si su moto es Daytona.
 3. modelo -- exacto (ej. "Wolf 200", "Tekken Evo", "Wing Evo 2").
    Obligatorio.
 4. anio -- obligatorio. Importa porque hay modelos que cambiaron de diseño
@@ -178,7 +181,25 @@ conservá todo lo demás que ya te había dado.
 
 ${modelsBlock}
 
-La lista no es completa: si dice un modelo que no está, aceptalo tal cual.
+Esta lista viene del archivo oficial entregado por el negocio. No aceptes
+un modelo fuera de ella. Si no sabe el modelo, dale solo 4 a 6 opciones y
+ofrecele enviar una foto de la moto o de la matrícula para identificarla.
+
+## Cómo identificar el modelo
+
+Analizá y relacioná todas las pistas disponibles antes de preguntar:
+- errores ortográficos y fonéticos ("Teken" puede ser Tekken);
+- abreviaturas y números ("GP1 RR", "Wing Evo 2");
+- cilindrada, tipo de moto y rasgos que describa;
+- emblemas, calcomanías, forma del tanque, faro y carenado si hay una foto.
+
+Compará esas pistas únicamente contra la lista Daytona anterior. Si una
+sola opción encaja claramente, guardá su nombre oficial en \`modelo\`. Si
+hay dos o más opciones razonables, dejá \`modelo\` en null y preguntá cuál
+es, mencionando primero las opciones más probables. No muestres tu
+razonamiento interno ni afirmes un modelo solo por parecido general.
+
+Variantes de escritura aprendidas y confirmadas: ${learnedBlock}
 
 ## Leé todo antes de preguntar
 
@@ -213,8 +234,11 @@ cotizar sobre eso.
 Muy seguido mandan una FOTO de la pieza en vez de describirla:
 identificala y usá terminología de repuestos ("guardafango delantero",
 "mascarilla", "tapa motor izquierda") para llenar \`repuesto\`; no le pidas
-que la escriba si la foto se ve clara. Por la foto NO se puede saber el
-modelo ni el año: esos igual hay que preguntarlos. La nota de voz se
+que la escriba si la foto se ve clara. También podés analizar la moto para
+proponer modelos Daytona: si se ve claramente el nombre o emblema y solo
+coincide uno, podés identificarlo; si la foto no distingue entre varias
+versiones, ofrecé esas opciones y pedí una foto del emblema, matrícula o
+número de chasis. El año no se adivina por apariencia. La nota de voz se
 interpreta igual que el texto.
 
 En el HISTORIAL los adjuntos aparecen como [FOTO], [NOTA DE VOZ], etc. Esa
@@ -358,8 +382,7 @@ export async function runIntake(params: {
   /** Nota de voz -- se interpreta igual que si fuera texto. */
   audio?: { base64: string; mimeType: string }
 }): Promise<IntakeResult> {
-  const knownModels = await getKnownModels()
-
+  const learnedAliases = await getLearnedDaytonaAliases()
   const prompt = `${params.nombreCliente ? `El cliente se llama ${params.nombreCliente}.\n\n` : ''}HISTORIAL DE LA CONVERSACIÓN:
 ${formatHistory(params.history)}
 
@@ -387,7 +410,7 @@ ${formatHistory(params.history)}
             model: config.geminiModel,
             contents: [{ role: 'user', parts }],
             config: {
-              systemInstruction: buildIntakeSystemPrompt(knownModels),
+              systemInstruction: buildIntakeSystemPrompt(learnedAliases),
               responseMimeType: 'application/json',
               responseSchema: RESPONSE_SCHEMA,
             },
@@ -454,6 +477,14 @@ ${formatHistory(params.history)}
     // exactamente lo que pasó.
     console.warn(`Recepción: ${err.message}. Se descarta eso y se sigue con el resto.`)
     parsed = rescatarLoLimpio(err.datos)
+  }
+
+  const rawModel = typeof parsed.modelo === 'string' ? parsed.modelo.trim() : ''
+  const learnedCanonical = rawModel ? learnedAliases.get(normalizeDaytonaText(rawModel)) : null
+  if (learnedCanonical) parsed.modelo = learnedCanonical
+  parsed = enforceDaytonaIntake(parsed, params.customerMessage)
+  if (rawModel && parsed.modelo && normalizeDaytonaText(rawModel) !== normalizeDaytonaText(parsed.modelo)) {
+    await observeDaytonaModelAlias(normalizeDaytonaText(rawModel), parsed.modelo)
   }
 
   return {

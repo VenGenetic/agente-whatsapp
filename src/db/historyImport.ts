@@ -258,13 +258,20 @@ export async function syncChatUnreadCounts(chats: Array<Partial<Chat>>): Promise
   for (const group of chunked([...wanted.keys()])) {
     const { data, error } = await supabase
       .from('agent_conversations')
-      .select('id, phone_number, unread_count')
+      .select('id, phone_number, unread_count, last_message_direction')
       .in('phone_number', group)
     if (error) throw error
 
     const rows = (data ?? [])
-      .filter((row) => (wanted.get(row.phone_number) ?? 0) !== row.unread_count)
-      .map((row) => ({ id: row.id, phone_number: row.phone_number, unread_count: wanted.get(row.phone_number)! }))
+      .map((row) => ({
+        id: row.id,
+        phone_number: row.phone_number,
+        // La lista representa "espera respuesta del negocio". Si el
+        // último mensaje fue nuestro, un contador rezagado de WhatsApp no
+        // debe volver a mostrar el chat como no leído.
+        unread_count: row.last_message_direction === 'outbound' ? 0 : wanted.get(row.phone_number)!,
+      }))
+      .filter((row) => row.unread_count !== data?.find((actual) => actual.id === row.id)?.unread_count)
     if (rows.length === 0) continue
 
     const { error: upError } = await supabase.from('agent_conversations').upsert(rows, { onConflict: 'id' })

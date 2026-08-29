@@ -19,6 +19,7 @@
  */
 import { correspondeSaludar, esSaludoPuro, textoDeSaludo } from '../src/agent/saludos.js'
 import { rescatarLoLimpio } from '../src/agent/intake.js'
+import { canonicalDaytonaModel, enforceDaytonaIntake, isDaytonaBrand } from '../src/agent/daytonaModels.js'
 import { campoContaminado, limpiarTextoParaElCliente, textoCorrupto } from '../src/gemini/sanidad.js'
 import { nombreDePila } from '../src/agent/nombreDelCliente.js'
 import { decidirAgente } from '../src/agent/handleMessage.js'
@@ -303,6 +304,26 @@ function verificarRescate(): void {
   esperar('y no le toca los datos', [sana.repuesto, sana.modelo, sana.anio], ['filtro de aire', 'Tekken 250', 'no sabe'])
 }
 
+function verificarModelosDaytona(): void {
+  console.log('\nMarca y modelos Daytona permitidos')
+  esperar('normaliza Wing Evo 2', canonicalDaytonaModel('Daytona Wing Evo 2 200cc'), 'Wing Evo II')
+  esperar('acepta GP-1 RR', canonicalDaytonaModel('GP1 RR'), 'GP-1 RR')
+  esperar('corrige Tekken Evo mal escrito', canonicalDaytonaModel('Teken Evo'), 'Tekken Evo')
+  esperar('corrige Dynamic Pro mal escrito', canonicalDaytonaModel('Dinamic Pro'), 'Dynamic Pro')
+  esperar('Daytona mal escrito sigue siendo la marca', isDaytonaBrand('Daitona'), true)
+  esperar('una marca distinta no se confunde con Daytona', isDaytonaBrand('Shineray'), false)
+  esperar('Shark sin número queda ambiguo', canonicalDaytonaModel('Shark'), null)
+  esperar('rechaza un modelo inexistente', canonicalDaytonaModel('Inventada 500'), null)
+  const otraMarca = enforceDaytonaIntake({ marca: 'Shineray', modelo: 'XY 200', complete: true }, 'es Shineray')
+  esperar('otra marca no completa la ficha', otraMarca.complete, false)
+  esperar('otra marca borra el modelo inválido', otraMarca.modelo, null)
+  const noSabe = enforceDaytonaIntake({ marca: 'Daytona', modelo: null, complete: false }, 'no sé el modelo')
+  esperar('si no sabe recibe opciones', /Wing Evo II/.test(noSabe.next_question), true)
+  const razonada = enforceDaytonaIntake({ marca: 'Daytona', modelo: null, complete: false,
+    next_question: 'Por la forma parece Tekken Evo o Tekken Discovery. ¿Cuál de esas dice en el emblema?' }, 'mandé la foto')
+  esperar('conserva opciones razonadas desde una foto', /Tekken Discovery/.test(razonada.next_question), true)
+}
+
 function main(): void {
   console.log('Verificando la recepción (no se manda ningún mensaje ni se consulta nada).')
   verificarSaludos()
@@ -312,6 +333,7 @@ function main(): void {
   verificarTextoAlCliente()
   verificarTextoRoto()
   verificarRescate()
+  verificarModelosDaytona()
 
   console.log('')
   if (fallos > 0) {

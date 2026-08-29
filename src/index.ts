@@ -4,6 +4,7 @@ import { iniciarOutboxWatcher } from './agent/outboxWatcher.js'
 import { runProactiveIntakeJob } from './agent/proactiveIntakeJob.js'
 import { runStockNotificationJob } from './agent/stockNotificationJob.js'
 import { runMergeConversationsJob } from './agent/mergeConversationsJob.js'
+import { runLearningJob } from './agent/learningJob.js'
 import { latir } from './db/heartbeat.js'
 import { cuandoConecte, getSocket, startWhatsApp } from './whatsapp/baileys.js'
 
@@ -31,6 +32,7 @@ const HEARTBEAT_INTERVAL_MS = 30 * 1000
 // duplicado aparece recién cuando el cliente escribe, o sea que tampoco
 // hay nada que ganar corriendo más seguido.
 const MERGE_CONVERSATIONS_INTERVAL_MS = 30 * 60 * 1000
+const LEARNING_INTERVAL_MS = 30 * 60 * 1000
 
 startWhatsApp()
   .then(() => {
@@ -112,6 +114,13 @@ startWhatsApp()
     setInterval(() => {
       runMergeConversationsJob().catch((err) => console.error('Error unificando chats duplicados:', err))
     }, MERGE_CONVERSATIONS_INTERVAL_MS)
+
+    // Aprende ejemplos seguros de las respuestas humanas ya registradas.
+    // No toca catálogo, precio ni stock: solo estilo y forma de atender.
+    runLearningJob().catch((err) => console.error('Error actualizando el aprendizaje:', err))
+    setInterval(() => {
+      runLearningJob().catch((err) => console.error('Error actualizando el aprendizaje:', err))
+    }, LEARNING_INTERVAL_MS)
   })
   .catch((err) => {
     console.error('Error fatal iniciando la conexión de WhatsApp:', err)

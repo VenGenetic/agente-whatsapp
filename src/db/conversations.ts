@@ -95,6 +95,10 @@ async function actualizarPreview(
       .update({
         last_message_preview: texto.slice(0, LARGO_PREVIEW),
         last_message_direction: direction,
+        // Si el negocio acaba de responder, no queda nada pendiente de
+        // lectura del lado del equipo. Esto también corrige el contador
+        // cuando WhatsApp todavía no emitió el evento de chat leído.
+        ...(direction === 'outbound' ? { unread_count: 0 } : {}),
       })
       .eq('id', conversationId)
   } catch {
