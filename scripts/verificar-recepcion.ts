@@ -345,7 +345,7 @@ function verificarRescate(): void {
 }
 
 function verificarModelosDaytona(): void {
-  console.log('\nMarca y modelos Daytona permitidos')
+  console.log('\nModelos Daytona conocidos y modelos nuevos declarados')
   esperar('normaliza Wing Evo 2', canonicalDaytonaModel('Daytona Wing Evo 2 200cc'), 'Wing Evo II')
   esperar('acepta GP-1 RR', canonicalDaytonaModel('GP1 RR'), 'GP-1 RR')
   esperar('corrige Tekken Evo mal escrito', canonicalDaytonaModel('Teken Evo'), 'Tekken Evo')
@@ -354,6 +354,17 @@ function verificarModelosDaytona(): void {
   esperar('una marca distinta no se confunde con Daytona', isDaytonaBrand('Shineray'), false)
   esperar('Shark sin número queda ambiguo', canonicalDaytonaModel('Shark'), null)
   esperar('rechaza un modelo inexistente', canonicalDaytonaModel('Inventada 500'), null)
+  const modeloNuevo = enforceDaytonaIntake({ marca: 'Daytona', modelo: 'Raptor X 250', repuesto: 'faro', complete: true },
+    'busco faro para mi Daytona Raptor X 250')
+  esperar('conserva un modelo nuevo declarado por el cliente', modeloNuevo.modelo, 'Raptor X 250')
+  esperar('el modelo nuevo declarado puede completar la ficha', modeloNuevo.complete, true)
+  const modeloInventado = enforceDaytonaIntake({ marca: 'Daytona', modelo: 'Raptor X', repuesto: 'faro', complete: true },
+    'busco faro para mi Daytona')
+  esperar('no conserva un modelo que el cliente no declaró', modeloInventado.modelo, null)
+  esperar('un modelo no declarado mantiene la ficha abierta', modeloInventado.complete, false)
+  const modeloAprendido = enforceDaytonaIntake({ marca: 'Daytona', modelo: 'Raptor X', complete: true },
+    'busco faro para mi Raptor', { modeloDaytonaAprendido: true })
+  esperar('conserva una variante aprendida y confirmada', modeloAprendido.modelo, 'Raptor X')
   const otraMarca = enforceDaytonaIntake({ marca: 'Shineray', modelo: 'XY 200', complete: true }, 'es Shineray')
   esperar('otra marca no completa la ficha', otraMarca.complete, false)
   esperar('otra marca conserva su modelo original', otraMarca.modelo, 'XY 200')

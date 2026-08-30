@@ -126,10 +126,25 @@ export function daytonaModelQuestion(
   return `¿Qué modelo Daytona tienes? Por ejemplo: ${EXAMPLES.slice(0, 4).join(', ')}. Si no lo sabes, dímelo y te muestro más opciones.`
 }
 
+/**
+ * Un modelo que el cliente escribió explícitamente es un dato mejor que la
+ * lista estática. La lista sirve para corregir alias y proponer opciones,
+ * no para negar una línea nueva o una variante recién importada.
+ *
+ * Se exige que el nombre aparezca en el mensaje para no conservar una
+ * invención del modelo; y se mantiene la excepción de la cilindrada sola,
+ * que no identifica una moto.
+ */
+function modeloDeclaradoPorCliente(modelo: string, customerText: string): boolean {
+  const candidato = normalizeDaytonaText(modelo)
+  if (candidato.length < 3) return false
+  return normalizeDaytonaText(customerText).includes(candidato)
+}
+
 export function enforceDaytonaIntake(
   data: Record<string, any>,
   customerText: string,
-  options: { currentPhotoReceived?: boolean } = {},
+  options: { currentPhotoReceived?: boolean; modeloDaytonaAprendido?: boolean } = {},
 ): Record<string, any> {
   const hasBrand = typeof data.marca === 'string' && data.marca.trim().length > 0
   if (hasBrand && !isDaytonaBrand(data.marca)) {
@@ -156,6 +171,14 @@ export function enforceDaytonaIntake(
     return { ...data, marca: 'Daytona', modelo: null,
       cilindraje: data.cilindraje ?? cilindrada, complete: false,
       next_question: preguntaConOpciones ?? daytonaModelQuestion(customerText, null, cilindrada) }
+  }
+  // Un modelo no conocido no se reemplaza por una sugerencia parecida ni se
+  // le pregunta de nuevo al cliente si este ya lo escribió. El vendedor lo
+  // verá como declarado por el cliente y podrá confirmar compatibilidad
+  // antes de cotizar. También se aceptan los alias ya aprendidos tras su
+  // revisión, aunque su modelo canónico sea nuevo para esta versión.
+  if (rawModel && !canonical && (options.modeloDaytonaAprendido || modeloDeclaradoPorCliente(rawModel, customerText))) {
+    return { ...data, marca: 'Daytona', modelo: rawModel, modelo_daytona_equivalente: null }
   }
   if (rawModel && !canonical) return { ...data, marca: 'Daytona', modelo: null, complete: false,
     next_question: daytonaModelQuestion(customerText, rawModel) }

@@ -1,6 +1,6 @@
 import { Type, type Schema } from '@google/genai'
 import { config } from '../config.js'
-import { DAYTONA_MODELS, enforceDaytonaIntake, isDaytonaBrand, normalizeDaytonaText } from './daytonaModels.js'
+import { canonicalDaytonaModel, DAYTONA_MODELS, enforceDaytonaIntake, isDaytonaBrand, normalizeDaytonaText } from './daytonaModels.js'
 import type { HistoryTurn } from '../db/conversations.js'
 import { getLearnedDaytonaAliases, observeDaytonaModelAlias } from '../db/daytonaModelLearning.js'
 import { generarContenido } from '../gemini/client.js'
@@ -206,9 +206,14 @@ conservá todo lo demás que ya te había dado.
 
 ${modelsBlock}
 
-Esta lista viene del archivo oficial entregado por el negocio. No aceptes
-un modelo fuera de ella. Si no sabe el modelo, dale solo 4 a 6 opciones y
-ofrecele enviar una foto de la moto o de la matrícula para identificarla.
+Esta lista es el catálogo conocido hoy y sirve para corregir alias y ofrecer
+opciones; los modelos pueden cambiar. Si el cliente declara claramente un
+modelo distinto, consérvalo tal como lo escribió en \`modelo\`: no le digas
+que no existe, no lo reemplaces por uno parecido y no inventes equivalencia
+ni disponibilidad. El vendedor confirmará la compatibilidad antes de
+cotizar. Si no sabe el modelo o da solo la cilindrada, dale solo 4 a 6
+opciones y ofrécele enviar una foto de la moto o de la matrícula para
+identificarla.
 
 ## Cómo identificar el modelo
 
@@ -218,11 +223,13 @@ Analizá y relacioná todas las pistas disponibles antes de preguntar:
 - cilindrada, tipo de moto y rasgos que describa;
 - emblemas, calcomanías, forma del tanque, faro y carenado si hay una foto.
 
-Compará esas pistas únicamente contra la lista Daytona anterior. Si una
-sola opción encaja claramente, guardá su nombre oficial en \`modelo\`. Si
-hay dos o más opciones razonables, dejá \`modelo\` en null y preguntá cuál
-es, mencionando primero las opciones más probables. No muestres tu
-razonamiento interno ni afirmes un modelo solo por parecido general.
+Usá la lista Daytona anterior para corregir escritura o identificar una
+opción conocida cuando encaje claramente. Si el cliente escribió un modelo
+distintivo que no figura en ella, conservá ese texto; no lo sustituyas por
+parecido general. Si no declaró modelo y hay dos o más opciones razonables,
+dejá \`modelo\` en null y preguntá cuál es, mencionando primero las opciones
+más probables. No muestres tu razonamiento interno ni afirmes un modelo solo
+por parecido general.
 
 Variantes de escritura aprendidas y confirmadas: ${learnedBlock}
 
@@ -508,9 +515,13 @@ ${formatHistory(params.history)}
   const rawModel = typeof parsed.modelo === 'string' ? parsed.modelo.trim() : ''
   const learnedCanonical = rawModel ? learnedAliases.get(normalizeDaytonaText(rawModel)) : null
   if (learnedCanonical && (!parsed.marca || isDaytonaBrand(parsed.marca))) parsed.modelo = learnedCanonical
-  parsed = enforceDaytonaIntake(parsed, params.customerMessage, { currentPhotoReceived: Boolean(params.image) })
+  parsed = enforceDaytonaIntake(parsed, params.customerMessage, {
+    currentPhotoReceived: Boolean(params.image),
+    modeloDaytonaAprendido: Boolean(learnedCanonical),
+  })
+  const modeloNoListadoDeclarado = Boolean(rawModel && !canonicalDaytonaModel(rawModel))
   if (rawModel && parsed.modelo && parsed.marca === 'Daytona'
-      && normalizeDaytonaText(rawModel) !== normalizeDaytonaText(parsed.modelo)) {
+      && (normalizeDaytonaText(rawModel) !== normalizeDaytonaText(parsed.modelo) || modeloNoListadoDeclarado)) {
     await observeDaytonaModelAlias(normalizeDaytonaText(rawModel), parsed.modelo)
   }
 
