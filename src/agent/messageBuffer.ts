@@ -32,13 +32,13 @@ import type { ParsedMessage } from '../whatsapp/parseMessage.js'
  * corto: el cliente está esperando del otro lado y una demora larga se
  * siente peor que una respuesta imperfecta.
  */
-const ESPERA_MS = 7000
+const ESPERA_MS = 2500
 
 /**
  * Tope desde el primer mensaje de la ráfaga. Sin esto, alguien que manda
  * un mensaje cada 6 segundos sin parar no recibiría respuesta nunca.
  */
-const ESPERA_MAXIMA_MS = 25000
+const ESPERA_MAXIMA_MS = 6000
 
 export type MensajeEnRafaga = { parsed: ParsedMessage; msg: WAMessage }
 

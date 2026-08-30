@@ -232,9 +232,14 @@ export async function upsertConversation(
 export async function logInboundMessage(
   conversationId: number,
   message: InboundMessageInput,
-): Promise<void> {
+): Promise<boolean> {
   // Se reintenta porque un mensaje perdido no se recupera: si Supabase
   // parpadea justo acá, esa conversación queda incompleta para siempre.
+  // El booleano importa tanto como el registro: Baileys puede reenviar el
+  // MISMO evento después de reconectar. Si ya estaba guardado no se debe
+  // volver a pasar por Gemini, porque el cliente recibiría dos respuestas
+  // para el mismo mensaje.
+  let inserted = false
   await withRetry(
     async () => {
       const { error } = await supabase.from('agent_messages').insert({
@@ -250,12 +255,15 @@ export async function logInboundMessage(
       // Un mensaje duplicado (mismo whatsapp_message_id) no debe tumbar el
       // proceso ni reintentarse -- Baileys reentrega eventos tras una
       // reconexión, y el duplicado significa que YA está guardado.
-      if (error && error.code !== '23505') throw error
+      if (error?.code === '23505') return
+      if (error) throw error
+      inserted = true
     },
     3,
     1000,
   )
-  await actualizarPreview(conversationId, 'inbound', message.body, message.contentType)
+  if (inserted) await actualizarPreview(conversationId, 'inbound', message.body, message.contentType)
+  return inserted
 }
 
 export type ActionTaken =

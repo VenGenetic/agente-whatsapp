@@ -28,7 +28,8 @@ import {
 } from '../src/agent/daytonaModels.js'
 import { campoContaminado, limpiarTextoParaElCliente, textoCorrupto } from '../src/gemini/sanidad.js'
 import { nombreDePila } from '../src/agent/nombreDelCliente.js'
-import { decidirAgente } from '../src/agent/handleMessage.js'
+import { decidirAgente, preguntaDeRespaldoDeRecepcion } from '../src/agent/handleMessage.js'
+import { esDesistimiento } from '../src/agent/cierreDeConversacion.js'
 import type { Etapa } from '../src/db/etapas.js'
 
 let fallos = 0
@@ -266,6 +267,39 @@ function verificarTextoRoto(): void {
   for (const texto of sanos) esperar(`no marca: "${texto.slice(0, 34)}…"`, textoCorrupto(texto), false)
 }
 
+function verificarCierresYRespaldo(): void {
+  console.log('\nDesistimiento y respaldo de recepción')
+  const cierres = ['ya no deseo gracias', 'No lo necesito por ahora', 'ya conseguí el repuesto, gracias']
+  for (const texto of cierres) esperar(`cierra: "${texto}"`, esDesistimiento(texto), true)
+
+  const noCierres = ['no sé el año', 'no quiero el izquierdo, sino el derecho', 'gracias, ¿qué modelos tienen?']
+  for (const texto of noCierres) esperar(`no cierra: "${texto}"`, esDesistimiento(texto), false)
+
+  const base = {
+    repuesto: null,
+    marca: null,
+    modelo: null,
+    modeloDaytonaEquivalente: null,
+    anio: null,
+    color: null,
+    posicion: null,
+    cilindraje: null,
+    observaciones: null,
+    fotoRecibida: false,
+  }
+  esperar('sin pieza pregunta la pieza', preguntaDeRespaldoDeRecepcion(base), '¿Qué repuesto estás buscando?')
+  esperar(
+    'con pieza pero sin moto pregunta marca y modelo',
+    preguntaDeRespaldoDeRecepcion({ ...base, repuesto: 'tanque' }),
+    '¿Para qué marca y modelo de moto necesitas ese repuesto?',
+  )
+  esperar(
+    'con modelo pero sin año pregunta el año',
+    preguntaDeRespaldoDeRecepcion({ ...base, repuesto: 'tanque', marca: 'Daytona', modelo: 'Tekken Evo' }),
+    '¿De qué año es tu Tekken Evo?',
+  )
+}
+
 function verificarRescate(): void {
   console.log('\nQué se rescata cuando el modelo insiste en ensuciar la respuesta')
 
@@ -379,6 +413,7 @@ function main(): void {
   verificarSanidad()
   verificarTextoAlCliente()
   verificarTextoRoto()
+  verificarCierresYRespaldo()
   verificarRescate()
   verificarModelosDaytona()
 

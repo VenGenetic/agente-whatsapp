@@ -23,6 +23,7 @@ import { runIntake } from './intake.js'
 import { resumenParaElVendedor } from './intakeHandoff.js'
 import { nombreDePila } from './nombreDelCliente.js'
 import { isAutoActivationMessage } from './autoActivation.js'
+import { esDesistimiento, RESPUESTA_DE_DESISTIMIENTO } from './cierreDeConversacion.js'
 import { correspondeSaludar, textoDeSaludo } from './saludos.js'
 import { encolarParaProcesar, mediaDeLaRafaga, textoDeLaRafaga, type MensajeEnRafaga } from './messageBuffer.js'
 import { draftReply } from '../gemini/respond.js'
@@ -65,7 +66,12 @@ import { parseIncomingMessage } from '../whatsapp/parseMessage.js'
 // disparando el fallback en vez de dejar la conversación muda para
 // siempre.
 const MAX_ITEMS_PER_MESSAGE = 3
-const PROCESS_MESSAGE_TIMEOUT_MS = 123000 * (MAX_ITEMS_PER_MESSAGE + 1)
+// La rÃ¡faga consume unos segundos, pero el proceso entero no puede usar
+// el mismo límite corto: Gemini suele responder en 4-8s y tiene picos
+// reales de 25-41s. Con 11s se convertían respuestas válidas en el
+// fallback técnico "se me complicó" y se escalaban chats sin necesidad.
+// 65s cubre esos picos y todavía corta una dependencia realmente colgada.
+const PROCESS_MESSAGE_TIMEOUT_MS = 65000
 
 const EMPTY_ITEM: InterpretedItem = { searchQuery: null, brandMentioned: null, vehicleContext: null, quantity: 1 }
 
@@ -593,6 +599,20 @@ async function handleProcessingFailure(
  * los tiene todos, pasa la conversación a un humano con el resumen.
  * Ver docs/system-prompts.md.
  */
+/**
+ * Última red de seguridad de la recepción. Un JSON incompleto del modelo no
+ * justifica pasarle al vendedor un cliente del que todavía no sabemos ni la
+ * pieza ni la moto; se pregunta el siguiente dato imprescindible y se
+ * conserva lo que ya pudo extraerse.
+ */
+export function preguntaDeRespaldoDeRecepcion(data: FichaDeRecepcion): string {
+  if (!data.repuesto) return '¿Qué repuesto estás buscando?'
+  if (!data.marca && !data.modelo) return '¿Para qué marca y modelo de moto necesitas ese repuesto?'
+  if (!data.modelo) return `¿Para qué modelo de moto necesitas el ${data.repuesto}?`
+  if (!data.anio) return `¿De qué año es tu ${data.modelo}?`
+  return '¿Me confirmas el repuesto y el modelo de tu moto para ayudarte bien?'
+}
+
 async function processIntakeMessage(
   sock: WASocket,
   conversation: { id: number; status: string },
@@ -655,7 +675,7 @@ async function processIntakeMessage(
     return
   }
 
-  const question = result.nextQuestion?.trim()
+  const question = result.nextQuestion?.trim() || preguntaDeRespaldoDeRecepcion(ficha)
   if (!question) {
     // Red de seguridad: el modelo dijo que falta info pero no formuló la
     // pregunta (se vio en pruebas cuando el cliente pregunta algo que el
@@ -729,6 +749,24 @@ async function processMessage(
   const etapa = await etapaDe(conversation.id)
   const agente = await elegirAgente(etapa, conversation.selectedAgent)
   if (!agente) return
+
+  // No hace falta interpretar ni seguir pidiendo datos si la persona ya
+  // desistió. Marcar el hilo resuelto evita que una frase de cortesía como
+  // "ya no deseo, gracias" vuelva a disparar la misma pregunta después.
+  if (esDesistimiento(customerMessage)) {
+    await sendAndLog(sock, conversation.id, parsed.chatJid, RESPUESTA_DE_DESISTIMIENTO, {
+      actionTaken: 'none',
+      agent: agente,
+    })
+    await setConversationStatus(conversation.id, 'closed')
+    await cambiarEtapa({
+      conversationId: conversation.id,
+      etapa: 'resolved',
+      actor: agente,
+      motivo: 'El cliente indicó que ya no necesita la consulta',
+    })
+    return
+  }
 
   // Un saludo pelado ("hola", "buenas tardes") no tiene nada que
   // interpretar: el cliente todavía no pidió nada. Se contesta desde el
@@ -928,12 +966,20 @@ export async function handleIncomingMessage(sock: WASocket, msg: WAMessage): Pro
   }
 
   let conversation = await upsertConversation(parsed.phoneNumber, parsed.pushName, parsed.lid, parsed.chatJid)
-  await logInboundMessage(conversation.id, {
+  const esNuevo = await logInboundMessage(conversation.id, {
     contentType: parsed.contentType,
     body: parsed.body,
     whatsappMessageId: msg.key.id ?? null,
     sentAt: parsed.sentAt,
   })
+
+  // WhatsApp/Baileys puede reenviar un evento tras una reconexión. La base
+  // ya lo deduplica por whatsapp_message_id; no alcanzar con eso hacía que
+  // el mismo texto entrara de nuevo al buffer y produjera otra respuesta.
+  if (!esNuevo) {
+    console.log(`Mensaje entrante duplicado ignorado en la conversación #${conversation.id}.`)
+    return
+  }
 
   // La media se copia SIEMPRE, incluso si el bot no va a contestar esta
   // conversación: WhatsApp no la vuelve a entregar más tarde, así que si
@@ -951,14 +997,15 @@ export async function handleIncomingMessage(sock: WASocket, msg: WAMessage): Pro
   // conversación ya tomada por una persona o escalada.
   if (isAutoActivationMessage(parsed.body)
       && conversation.status !== 'escalated'
-      && conversation.status !== 'human_active') {
+      && conversation.status !== 'human_active'
+      && conversation.status !== 'closed') {
     conversation = await activateConversationForIntake(conversation.id)
     console.log(`Agente de recepción activado automáticamente en el chat #${conversation.id}.`)
   }
 
   // Si ya está escalada o un humano tomó el hilo, el bot no contesta solo --
   // solo queda el log de arriba para que el humano tenga el contexto.
-  if (conversation.status === 'escalated' || conversation.status === 'human_active') return
+  if (conversation.status === 'escalated' || conversation.status === 'human_active' || conversation.status === 'closed') return
 
   // Freno de emergencia del servidor (BOT_KILL_SWITCH=true en el .env):
   // apaga el agente entero sin importar lo que diga el ERP. Es para

@@ -7,7 +7,7 @@
  * cada segundo cuenta para que no se vaya. Sigue siendo aleatorio y no
  * instantáneo, que es lo que importa para no parecer un bot.
  */
-export function randomDelayMs(minMs = 600, maxMs = 1500): number {
+export function randomDelayMs(minMs = 300, maxMs = 800): number {
   return Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs
 }
 
