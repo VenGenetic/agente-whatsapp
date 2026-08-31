@@ -30,6 +30,8 @@ export type InboundMessageInput = {
   contentType: ContentType
   body: string | null
   whatsappMessageId: string | null
+  /** Mensaje al que el cliente está respondiendo, si usó la cita de WhatsApp. */
+  replyToWaId?: string | null
   /**
    * Copia de la foto/audio/archivo en Supabase Storage. Se llena aparte,
    * después de insertar la fila (ver whatsapp/inboundMedia.ts): la
@@ -248,6 +250,7 @@ export async function logInboundMessage(
         content_type: message.contentType,
         body: message.body,
         whatsapp_message_id: message.whatsappMessageId,
+        ...(message.replyToWaId ? { reply_to_wa_id: message.replyToWaId } : {}),
         ...(message.mediaUrl ? { media_url: message.mediaUrl } : {}),
         ...(message.sentAt ? { created_at: message.sentAt.toISOString() } : {}),
       })
@@ -300,6 +303,8 @@ export type OutboundMessageInput = {
    * sobre esta columna hace que el eco se descarte solo.
    */
   whatsappMessageId?: string | null
+  /** Mensaje citado por la respuesta enviada desde el ERP o el teléfono. */
+  replyToWaId?: string | null
   /** Ver InboundMessageInput.sentAt -- misma razón. */
   sentAt?: Date | null
   /**
@@ -357,6 +362,7 @@ export async function logOutboundMessage(
         action_taken: message.actionTaken,
         ...(message.agent && columnaAgenteDisponible ? { agent: message.agent } : {}),
         whatsapp_message_id: message.whatsappMessageId ?? null,
+        ...(message.replyToWaId ? { reply_to_wa_id: message.replyToWaId } : {}),
         ...(message.mediaUrl ? { media_url: message.mediaUrl } : {}),
         ...(message.sentAt ? { created_at: message.sentAt.toISOString() } : {}),
         // Arranca en 'pending': hasta que WhatsApp confirme, NO se puede

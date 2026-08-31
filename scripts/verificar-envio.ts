@@ -68,6 +68,16 @@ await verificarColumnas(
   'Aplicá supabase/migrations/0026_agent_outbox_media.sql.',
 )
 await verificarColumnas('agent_messages', 'media_url', 'Aplicá supabase/migrations/0026_agent_outbox_media.sql.')
+await verificarColumnas(
+  'agent_outbox',
+  'reply_to_wa_id',
+  'Aplicá supabase/migrations/0031_agent_outbox_acciones.sql para responder citando.',
+)
+await verificarColumnas(
+  'agent_messages',
+  'reply_to_wa_id',
+  'Aplicá supabase/migrations/0031_agent_outbox_acciones.sql para mostrar respuestas citadas.',
+)
 await verificarColumnas('agent_quick_replies', 'id, label, body', 'Aplicá supabase/migrations/0026_agent_outbox_media.sql.')
 await verificarColumnas(
   'agent_settings',

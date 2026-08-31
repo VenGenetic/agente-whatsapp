@@ -19,8 +19,30 @@ export type ParsedMessage = {
    */
   fromMe: boolean
   whatsappMessageId: string | null
+  /**
+   * Id de WhatsApp del mensaje que esta respuesta está citando. WhatsApp lo
+   * guarda dentro de `contextInfo` y puede venir en texto, fotos, archivos o
+   * notas de voz.
+   */
+  replyToWaId: string | null
   /** Cuándo lo envió WhatsApp (no cuándo lo recibimos nosotros). */
   sentAt: Date | null
+}
+
+/**
+ * La cita viaja en `contextInfo.stanzaId`; no solo en texto. Un cliente
+ * puede responder a una foto o un documento, y si se leyera únicamente
+ * `extendedTextMessage` el ERP volvería a mostrar su respuesta suelta.
+ */
+function replyToWaId(content: NonNullable<WAMessage['message']>): string | null {
+  const candidates = [
+    content.extendedTextMessage?.contextInfo?.stanzaId,
+    content.imageMessage?.contextInfo?.stanzaId,
+    content.videoMessage?.contextInfo?.stanzaId,
+    content.documentMessage?.contextInfo?.stanzaId,
+    content.audioMessage?.contextInfo?.stanzaId,
+  ];
+  return candidates.find((id): id is string => Boolean(id)) ?? null;
 }
 
 /**
@@ -83,7 +105,16 @@ export function parseIncomingMessage(msg: WAMessage): ParsedMessage | null {
   const whatsappMessageId = msg.key.id ?? null
   const timestampSeconds = Number(msg.messageTimestamp ?? 0)
   const sentAt = timestampSeconds > 0 ? new Date(timestampSeconds * 1000) : null
-  const base = { phoneNumber, lid, chatJid, pushName, fromMe, whatsappMessageId, sentAt }
+  const base = {
+    phoneNumber,
+    lid,
+    chatJid,
+    pushName,
+    fromMe,
+    whatsappMessageId,
+    replyToWaId: replyToWaId(content),
+    sentAt,
+  }
 
   if (content.conversation) {
     return { ...base, contentType: 'text', body: content.conversation }

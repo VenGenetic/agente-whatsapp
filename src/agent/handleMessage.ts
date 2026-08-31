@@ -939,6 +939,7 @@ export async function handleIncomingMessage(sock: WASocket, msg: WAMessage): Pro
       actionTaken: 'human_reply',
       agent: 'human',
       whatsappMessageId: parsed.whatsappMessageId,
+      replyToWaId: parsed.replyToWaId,
       sentAt: parsed.sentAt,
     })
 
@@ -971,6 +972,7 @@ export async function handleIncomingMessage(sock: WASocket, msg: WAMessage): Pro
     contentType: parsed.contentType,
     body: parsed.body,
     whatsappMessageId: msg.key.id ?? null,
+    replyToWaId: parsed.replyToWaId,
     sentAt: parsed.sentAt,
   })
 

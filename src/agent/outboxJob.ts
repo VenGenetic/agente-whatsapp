@@ -519,6 +519,9 @@ async function guardarEnvio(
     productId: item.product_id,
     actionTaken: 'human_reply',
     whatsappMessageId,
+    // No basta con citarlo al enviarlo: esta misma referencia tiene que
+    // quedar guardada para que el ERP pueda reconstruir la tarjeta de cita.
+    replyToWaId: item.reply_to_wa_id,
     // Este mensaje lo mandamos NOSOTROS (a diferencia de los que el
     // vendedor escribe desde su teléfono, que también son 'human_reply'),
     // así que el acuse de recibo de WhatsApp sí aplica: quien lo escribió
