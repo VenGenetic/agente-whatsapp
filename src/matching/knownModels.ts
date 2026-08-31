@@ -7,6 +7,37 @@ let cachedDefaults: { map: Map<string, string>; fetchedAt: number } | null = nul
 let cachedDisambiguations: { list: ModelDisambiguation[]; fetchedAt: number } | null = null
 
 /**
+ * Familias cuyo nombre corto es a la vez un modelo propio. Una coincidencia
+ * de "WOLF" dentro de "WOLF 250" no prueba compatibilidad con la Wolf 200;
+ * lo mismo aplica entre Tekken y sus tres líneas. Se conservan los nombres
+ * cortos cuando aparecen separados en una descripción compuesta.
+ */
+const MODEL_FAMILIES: Array<{ base: string; variants: string[] }> = [
+  { base: 'WOLF', variants: ['WOLF 250', 'WOLF EVOLUTION', 'SUPER WOLF'] },
+  { base: 'TEKKEN', variants: ['TEKKEN 250', 'TEKKEN EVO', 'TEKKEN DISCOVERY'] },
+]
+
+function escapedModel(model: string): string {
+  return model.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function rangesOfModel(text: string, model: string): Array<{ start: number; end: number }> {
+  const ranges: Array<{ start: number; end: number }> = []
+  const pattern = new RegExp(`\\b${escapedModel(model)}\\b`, 'gi')
+  for (const match of text.matchAll(pattern)) {
+    if (match.index !== undefined) ranges.push({ start: match.index, end: match.index + match[0].length })
+  }
+  return ranges
+}
+
+function baseAppearsSeparately(text: string, base: string, variants: string[]): boolean {
+  const variantRanges = variants.flatMap((variant) => rangesOfModel(text, variant))
+  return rangesOfModel(text, base).some((baseRange) =>
+    !variantRanges.some((variantRange) => variantRange.start <= baseRange.start && variantRange.end >= baseRange.end),
+  )
+}
+
+/**
  * Lista de modelos de moto conocidos (agent_known_models), para dar contexto
  * real al intérprete en vez de que dependa de lo que Gemini "sepa" sobre la
  * marca Daytona -- que puede confundirla con otra marca del mismo nombre.
@@ -53,10 +84,27 @@ export function detectKnownModels(text: string, knownModels: string[]): string[]
   const sorted = [...knownModels].sort((a, b) => b.length - a.length)
   const found: string[] = []
   for (const model of sorted) {
-    const escaped = model.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    if (new RegExp(`\\b${escaped}\\b`, 'i').test(upper)) found.push(model)
+    const family = MODEL_FAMILIES.find((candidate) => candidate.base === model)
+    const knownVariants = family?.variants.filter((variant) => knownModels.includes(variant)) ?? []
+    if (family && knownVariants.length > 0) {
+      if (baseAppearsSeparately(upper, model, knownVariants)) found.push(model)
+    } else if (rangesOfModel(upper, model).length > 0) {
+      found.push(model)
+    }
   }
   return found
+}
+
+/**
+ * El catálogo conserva "TEKKEN" en muchos repuestos del modelo anterior.
+ * Para una DESCRIPCIÓN de producto ese nombre equivale a Tekken 250; para
+ * lo que escribe un cliente se usa detectKnownModels y sigue siendo una
+ * consulta ambigua. Así no se vende una pieza de Evo/Discovery por error.
+ */
+export function detectCatalogModels(text: string, knownModels: string[]): string[] {
+  const models = detectKnownModels(text, knownModels)
+  if (!models.includes('TEKKEN') || !knownModels.includes('TEKKEN 250')) return models
+  return [...new Set(models.map((model) => (model === 'TEKKEN' ? 'TEKKEN 250' : model)))]
 }
 
 /**

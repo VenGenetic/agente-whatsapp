@@ -29,6 +29,7 @@ import { encolarParaProcesar, mediaDeLaRafaga, textoDeLaRafaga, type MensajeEnRa
 import { draftReply } from '../gemini/respond.js'
 import {
   applyModelDefault,
+  detectCatalogModels,
   detectKnownModels,
   findModelDisambiguation,
   getKnownModels,
@@ -406,14 +407,14 @@ async function handleProductRequest(
   // pregunta de desambiguación en vez de la respuesta directa.
   if (match.matchedVia !== 'alias_exact') {
     const queryModels = detectKnownModels(query, knownModels)
-    const matchModels = detectKnownModels(match.name, knownModels)
+    const matchModels = detectCatalogModels(match.name, knownModels)
     const matchOverlapsQuery = matchModels.some((m) => queryModels.includes(m))
 
     if (queryModels.length > 0 && matchModels.length > 0 && !matchOverlapsQuery) {
       const betterMatch = matches.find(
         (m) =>
           m.productId !== match.productId &&
-          detectKnownModels(m.name, knownModels).some((mm) => queryModels.includes(mm)),
+          detectCatalogModels(m.name, knownModels).some((mm) => queryModels.includes(mm)),
       )
       if (betterMatch && betterMatch.matchConfidence >= config.matchConfidenceThreshold) {
         match = betterMatch
@@ -435,7 +436,7 @@ async function handleProductRequest(
       // hay forma confiable de adivinar cuál -- preguntamos.
       const modelsAcrossCandidates = new Set<string>()
       for (const m of matches) {
-        for (const model of detectKnownModels(m.name, knownModels)) modelsAcrossCandidates.add(model)
+        for (const model of detectCatalogModels(m.name, knownModels)) modelsAcrossCandidates.add(model)
       }
       if (modelsAcrossCandidates.size > 1) {
         const examples = [...modelsAcrossCandidates].slice(0, 5).join(', ')

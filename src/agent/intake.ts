@@ -131,9 +131,10 @@ seguís con la pregunta que falte.
    Pro?" queda ridículo. Preguntala solo si no dio ningún modelo. Si
    nombra otra marca (Shineray, Axxo, Tuko...), CONSERVÁ esa marca y el
    modelo que diga. No lo rechaces ni le preguntes si en realidad es Daytona.
-   Pedile una foto completa de la moto, de lado y con buena luz, para revisar
-   si es la misma plataforma que un modelo Daytona vendido con otro nombre.
-3. modelo -- exacto (ej. "Wolf 200", "Tekken Evo", "Wing Evo 2").
+   Las descripciones pueden enumerar ese modelo junto a Daytona porque son
+   compatibilidades directas. Pedí foto solo si no se entiende el modelo o
+   la pieza, no para inventar una equivalencia Daytona.
+3. modelo -- exacto (ej. "Wolf", "Wolf 250", "Tekken 250", "Tekken Evo").
    Obligatorio, y es el nombre del modelo: "Daytona 150", "una 200",
    "300cc" NO son modelos, son la marca y la cilindrada. En cada
    cilindrada hay una docena de modelos con piezas distintas, así que
@@ -159,13 +160,13 @@ seguís con la pregunta que falte.
    "tomando en cuenta que estás sentado en la moto". Sin eso la mitad
    contesta al revés y el cliente termina con la pieza del otro lado.
 
-6. cilindraje -- SOLO cuando el mismo modelo viene en varias
-   cilindradas o versiones y eso cambia la pieza (ej. Wolf 200 y Wolf
-   250). Si el cliente ya lo dijo dentro del modelo ("Tekken 250"), ya
-   lo tenés: no lo preguntes de nuevo. Si dijo la cilindrada sin el
-   modelo ("Daytona 150"), guardala igual acá -- es un dato que ya te
-   dio y no se le vuelve a preguntar. Si no cambia nada, dejalo en
-   null.
+6. cilindraje -- SOLO cuando sea un dato adicional que cambie la pieza.
+   Si ya identifica el modelo, no lo preguntes de nuevo. En la familia
+   Wolf, "Wolf" y "Wolf 200" son la misma moto (modelo Wolf); "Wolf
+   250", "Wolf Evolution" (250) y "Super Wolf" (300) son modelos
+   distintos. Si dijo la cilindrada sin el modelo ("Daytona 150"),
+   guardala igual acá -- es un dato que ya te dio y no se le vuelve a
+   preguntar. Si no cambia nada, dejalo en null.
 
 7. color -- SOLO si esa pieza viene en colores. Carrocería (tanque,
    guardafango, placas laterales, mascarilla, asiento, cúpula): sí,
@@ -230,6 +231,34 @@ parecido general. Si no declaró modelo y hay dos o más opciones razonables,
 dejá \`modelo\` en null y preguntá cuál es, mencionando primero las opciones
 más probables. No muestres tu razonamiento interno ni afirmes un modelo solo
 por parecido general.
+
+## Familia Wolf: regla obligatoria
+
+- "Wolf" o "Wolf 200" significa el modelo **Wolf** (motor 200). No
+  preguntes si es Wolf Evolution ni Super Wolf.
+- "Wolf 250" es un modelo distinto de Wolf Evolution, aunque ambas sean 250.
+- "Wolf Evolution" es un modelo propio de motor 250.
+- "Super Wolf" es un modelo propio de motor 300.
+
+Cuando el cliente ya dio cualquiera de esos cuatro nombres, conservá ese
+modelo y seguí con el siguiente dato faltante; no le ofrezcas los otros como
+si fueran alternativas de la misma moto.
+
+## Familia Tekken: regla obligatoria
+
+- Solo existen estos tres modelos: "Tekken 250" (modelo anterior),
+  "Tekken Evo" (también 250) y "Tekken Discovery" (300). Son tres
+  motos distintas aunque las dos primeras sean 250.
+- "Tekken" o "Daytona Tekken" sin apellido NO identifica el modelo.
+  Dejá \`modelo\` en null y preguntá: "¿Cuál Tekken tienes: Tekken 250
+  (modelo anterior), Tekken Evo 250 o Tekken Discovery 300?"
+- La palabra "Daytona" antes del nombre es la marca, no una variante del
+  modelo. Por ejemplo, "Daytona Tekken 250" se guarda como marca Daytona y
+  modelo Tekken 250.
+
+Cuando el cliente ya dio uno de estos tres nombres, conservá ese modelo y
+seguí con el siguiente dato faltante. No le ofrezcas los otros como
+alternativas ni los reemplaces por parecido.
 
 Variantes de escritura aprendidas y confirmadas: ${learnedBlock}
 
@@ -369,6 +398,46 @@ dos veces lo mismo.
 needs_human = true si pide hablar con alguien, se queja, pide descuento,
 reclama por algo que compró o el tono suena enojado. Ahí no sigas
 preguntando datos.
+## Reglas confirmadas de modelos y compatibilidad
+
+- Wolf/Wolf 200, Wolf 250, Wolf Evolution y Super Wolf son cuatro modelos
+  distintos. Cuando el cliente diga solo Wolf, es Wolf 200.
+- Tekken sin variante es ambiguo: preguntá entre Tekken 250, Tekken Evo y
+  Tekken Discovery. Nunca agregues “Nativa” como cuarta Tekken.
+- Wing Evo sin número es Wing Evo 200 (también Wing Evo 1). Wing Evo 2 es
+  otro modelo; “Wing Evo 202” es una forma errada de escribir Wing Evo 2,
+  no una variante adicional. En plásticos de Wing Evo 2 pedí año: 2023 o
+  antes y 2024 en adelante pueden usar plásticos distintos.
+- GP1 es GP-1 250. GP1-R/GP1R, GP1-RR/GP1RR y GP1-S/GP1S son cada uno un
+  modelo distinto; no los mezcles.
+- Shark sin número es ambiguo: preguntá Shark 1, Shark 2 o Shark 3. Para
+  piezas que no son de motor no hace falta pedir cilindrada.
+- Scorpion 200 y 250 solo cambian en motor; no pidas cilindrada para
+  carrocería. Eagle solo normalmente significa Eagle 3. Todos los Eagle
+  (1, 2, 3, 4, 5 y Z) son 150.
+- S1ADV significa S1 Adventure 180. Si dice Crossover, es el modelo
+  Crossover, no S1 Adventure. Evo, Evo2 o Evol solos significan la Pasola
+  Evo 2 180; nunca los confundas con Wing Evo ni Tekken Evo.
+- Crossfire es 250, Force es 200 y Feroce es 250.
+
+Si la marca no es Daytona, conservá la marca y el modelo exactos que diga
+el cliente. Las descripciones del catálogo pueden enumerar modelos de otras
+marcas junto a Daytona porque son la misma plataforma: eso es compatibilidad
+directa, no una equivalencia que vos debas inventar. Pedí foto solo si no se
+entiende el modelo o la pieza, no para obligarlo a identificar una Daytona.
+
+Para plásticos/carrocería necesitás obligatoriamente modelo exacto, color y
+qué pieza concreta busca. “Plástico del tanque” se registra como “placa
+tanque”. Si dice (I-D), es el par izquierdo y derecho; no preguntes un lado
+salvo que el cliente pida una sola pieza.
+
+## Cuándo pasar a una persona sin seguir preguntando
+
+needs_human = true si el pedido es de motor o de una pieza interna de motor,
+si pide proforma, descuento, hablar con un vendedor, o si dice que la pieza
+no es la que buscaba/no le sirve/no ajusta. Una corrección simple de color,
+modelo, año o lado no cuenta como problema: actualizá ese dato y seguí.
+
 `.trim()
 }
 
@@ -401,6 +470,24 @@ function formatHistory(history: HistoryTurn[]): string {
  * buscar en catálogo -> redactar), este modo NUNCA toca la base de
  * productos -- ver docs/system-prompts.md.
  */
+/**
+ * Casos que el negocio pidió sacar de la automatización de inmediato. Es un
+ * freno deliberadamente conservador: una corrección normal (“no el izquierdo,
+ * el derecho”) no coincide, pero un reclamo o pieza de motor sí llega a una
+ * persona sin depender de que el modelo lo clasifique bien.
+ */
+export function requiereAtencionHumana(texto: string): boolean {
+  const normalizado = texto
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+
+  const motor = /\b(motor|piston(?:es)?|cilindro|culata|ciguenal|biela|arbol de levas|balancin(?:es)?|valvula(?:s)?|carburador|caja de cambios|cambios armada|magneto|estator|embrague|clutch|carter)\b/
+  const comercial = /\b(proforma|descuento|rebaja|mejor precio|precio especial|vendedor|asesor|persona|humano)\b/
+  const problema = /\b(no (?:es|era) (?:eso|esa|ese|el|la)|no me sirve|no sirve|no ajusta|no queda|equivocad[oa]|reclamo|garantia|devolu(?:cion|cion))\b/
+  return motor.test(normalizado) || comercial.test(normalizado) || problema.test(normalizado)
+}
+
 export async function runIntake(params: {
   history: HistoryTurn[]
   customerMessage: string
@@ -539,7 +626,7 @@ ${formatHistory(params.history)}
     },
     complete: Boolean(parsed.complete),
     nextQuestion: paraElCliente(parsed.next_question),
-    needsHuman: Boolean(parsed.needs_human),
+    needsHuman: Boolean(parsed.needs_human) || requiereAtencionHumana(params.customerMessage),
   }
 }
 

@@ -18,7 +18,7 @@
  * Uso: npm run verificar-recepcion
  */
 import { correspondeSaludar, esSaludoPuro, textoDeSaludo } from '../src/agent/saludos.js'
-import { rescatarLoLimpio } from '../src/agent/intake.js'
+import { requiereAtencionHumana, rescatarLoLimpio } from '../src/agent/intake.js'
 import {
   canonicalDaytonaModel,
   cilindrajeSinModelo,
@@ -346,13 +346,39 @@ function verificarRescate(): void {
 
 function verificarModelosDaytona(): void {
   console.log('\nModelos Daytona conocidos y modelos nuevos declarados')
+  esperar('Wing Evo sin número es Wing Evo 200', canonicalDaytonaModel('Wing Evo'), 'Wing Evo 200')
+  esperar('Wing Evo 202 es Wing Evo 2', canonicalDaytonaModel('Wing Evo 202 2025'), 'Wing Evo II')
+  esperar('GP1R es GP-1 R', canonicalDaytonaModel('GP1R'), 'GP-1 R')
+  esperar('GP1RR es GP-1 RR', canonicalDaytonaModel('GP1RR'), 'GP-1 RR')
+  esperar('S1ADV es S1 Adventure', canonicalDaytonaModel('S1ADV 180'), 'S1 Adventure')
+  esperar('Crossover es modelo S1 Crossover', canonicalDaytonaModel('Crossover'), 'S1 Crossover')
+  esperar('Eagle solo es Eagle 3', canonicalDaytonaModel('Eagle'), 'Eagle 3')
+  esperar('Evo solo es Pasola Evo 2', canonicalDaytonaModel('Evol 180'), 'Pasola Evo 2')
   esperar('normaliza Wing Evo 2', canonicalDaytonaModel('Daytona Wing Evo 2 200cc'), 'Wing Evo II')
   esperar('acepta GP-1 RR', canonicalDaytonaModel('GP1 RR'), 'GP-1 RR')
   esperar('corrige Tekken Evo mal escrito', canonicalDaytonaModel('Teken Evo'), 'Tekken Evo')
   esperar('corrige Dynamic Pro mal escrito', canonicalDaytonaModel('Dinamic Pro'), 'Dynamic Pro')
+  esperar('Wolf 200 es el modelo Wolf', canonicalDaytonaModel('Daytona Wolf 200'), 'Wolf')
+  esperar('Wolf sin cilindrada sigue siendo Wolf 200', canonicalDaytonaModel('Wolf'), 'Wolf')
+  esperar('Wolf 250 no se confunde con Wolf', canonicalDaytonaModel('Wolf 250'), 'Wolf 250')
+  esperar('Wolf Evolution es un modelo distinto', canonicalDaytonaModel('Wolf Evolution 250'), 'Wolf Evolution')
+  esperar('Super Wolf es un modelo distinto', canonicalDaytonaModel('Super Wolf 300'), 'Super Wolf')
+  esperar('Daytona Tekken sin apellido queda ambiguo', canonicalDaytonaModel('Daytona Tekken'), null)
+  esperar('Tekken 250 no se confunde con Tekken', canonicalDaytonaModel('Daytona Tekken 250'), 'Tekken 250')
+  esperar('Tekken Evo es un modelo distinto', canonicalDaytonaModel('Tekken Evo'), 'Tekken Evo')
+  esperar('Tekken Discovery 300 es un modelo distinto', canonicalDaytonaModel('Daytona Tekken Discovery 300'), 'Tekken Discovery')
+  const tekkenAmbiguo = enforceDaytonaIntake({ marca: 'Daytona', modelo: 'Tekken', complete: true },
+    'busco plásticos para mi Daytona Tekken')
+  esperar('Tekken sin apellido no completa la ficha', tekkenAmbiguo.complete, false)
+  esperar('Tekken sin apellido pide las tres variantes correctas', /Tekken 250.*Tekken Evo 250.*Tekken Discovery 300/s.test(tekkenAmbiguo.next_question), true)
+  const tekkenAmbiguoSinModelo = enforceDaytonaIntake({ marca: 'Daytona', modelo: null, complete: false },
+    'busco plásticos para mi Daytona Tekken')
+  esperar('Tekken ambiguo se pregunta aun si la IA dejó modelo vacío', /Tekken 250.*Tekken Evo 250.*Tekken Discovery 300/s.test(tekkenAmbiguoSinModelo.next_question), true)
   esperar('Daytona mal escrito sigue siendo la marca', isDaytonaBrand('Daitona'), true)
   esperar('una marca distinta no se confunde con Daytona', isDaytonaBrand('Shineray'), false)
   esperar('Shark sin número queda ambiguo', canonicalDaytonaModel('Shark'), null)
+  const sharkAmbiguo = enforceDaytonaIntake({ marca: 'Daytona', modelo: 'Shark', complete: true }, 'busco faro para Shark')
+  esperar('Shark sin versión pide Shark 1, 2 o 3', /Shark 1.*Shark 2.*Shark 3/s.test(sharkAmbiguo.next_question), true)
   esperar('rechaza un modelo inexistente', canonicalDaytonaModel('Inventada 500'), null)
   const modeloNuevo = enforceDaytonaIntake({ marca: 'Daytona', modelo: 'Raptor X 250', repuesto: 'faro', complete: true },
     'busco faro para mi Daytona Raptor X 250')
@@ -366,18 +392,18 @@ function verificarModelosDaytona(): void {
     'busco faro para mi Raptor', { modeloDaytonaAprendido: true })
   esperar('conserva una variante aprendida y confirmada', modeloAprendido.modelo, 'Raptor X')
   const otraMarca = enforceDaytonaIntake({ marca: 'Shineray', modelo: 'XY 200', complete: true }, 'es Shineray')
-  esperar('otra marca no completa la ficha', otraMarca.complete, false)
+  esperar('otra marca conserva una ficha completa', otraMarca.complete, true)
   esperar('otra marca conserva su modelo original', otraMarca.modelo, 'XY 200')
-  esperar('otra marca pide una foto para comparar', /foto completa/i.test(otraMarca.next_question), true)
+  esperar('otra marca no fuerza una equivalencia Daytona', otraMarca.modelo_daytona_equivalente, null)
   const otraMarcaConFoto = enforceDaytonaIntake({ marca: 'Shineray', modelo: 'XY 200',
     modelo_daytona_equivalente: 'Tekken Evo', complete: true }, 'adjunto foto', { currentPhotoReceived: true })
-  esperar('la foto permite guardar el equivalente Daytona', otraMarcaConFoto.modelo_daytona_equivalente, 'Tekken Evo')
-  esperar('la equivalencia conserva la marca original', otraMarcaConFoto.marca, 'Shineray')
+  esperar('ni con foto inventa un equivalente Daytona', otraMarcaConFoto.modelo_daytona_equivalente, null)
+  esperar('conserva la marca original', otraMarcaConFoto.marca, 'Shineray')
   const fotoAmbigua = enforceDaytonaIntake({ marca: 'Tuko', modelo: 'CR3 Max 200', complete: true },
     'adjunto foto', { currentPhotoReceived: true })
-  esperar('una foto ambigua no inventa equivalencia', fotoAmbigua.complete, false)
+  esperar('una foto ambigua conserva la ficha de otra marca', fotoAmbigua.complete, true)
   const noSabe = enforceDaytonaIntake({ marca: 'Daytona', modelo: null, complete: false }, 'no sé el modelo')
-  esperar('si no sabe recibe opciones', /Wing Evo II/.test(noSabe.next_question), true)
+  esperar('si no sabe recibe opciones', /Wing Evo 200/.test(noSabe.next_question), true)
   const razonada = enforceDaytonaIntake({ marca: 'Daytona', modelo: null, complete: false,
     next_question: 'Por la forma parece Tekken Evo o Tekken Discovery. ¿Cuál de esas dice en el emblema?' }, 'mandé la foto')
   esperar('conserva opciones razonadas desde una foto', /Tekken Discovery/.test(razonada.next_question), true)
@@ -407,13 +433,23 @@ function verificarModelosDaytona(): void {
   esperar('no cierra la ficha con la cilindrada sola', soloCC.complete, false)
   esperar('y no guarda "Daytona 150" como modelo', soloCC.modelo, null)
   esperar('conserva la cilindrada que sí dio', soloCC.cilindraje, '150')
-  esperar('pregunta el modelo exacto nombrando opciones', /150.*Wing Evo II/s.test(soloCC.next_question), true)
+  esperar('pregunta el modelo exacto nombrando opciones', /150.*Wing Evo 200/s.test(soloCC.next_question), true)
   esperar('y ofrece ayuda con una foto', /foto/i.test(soloCC.next_question), true)
 
   const ccEnElMensaje = enforceDaytonaIntake({ marca: 'Daytona', modelo: null, repuesto: 'espejos', complete: false },
     'busco espejos para una daytona 300')
   esperar('la cilindrada del mensaje también se rescata', ccEnElMensaje.cilindraje, '300')
   esperar('y se pregunta por el modelo de esa cilindrada', /Daytona 300/.test(ccEnElMensaje.next_question), true)
+}
+
+function verificarEscalamientoInmediato(): void {
+  console.log('\nCuándo recepción debe pasar directo a una persona')
+  esperar('una pieza de motor escala', requiereAtencionHumana('necesito pistón para mi moto'), true)
+  esperar('una proforma escala', requiereAtencionHumana('me hace una proforma por favor'), true)
+  esperar('un descuento escala', requiereAtencionHumana('me puede hacer descuento'), true)
+  esperar('una pieza que no ajusta escala', requiereAtencionHumana('no ajusta, no es lo que busco'), true)
+  esperar('corregir el lado no escala', requiereAtencionHumana('no el izquierdo, el derecho'), false)
+  esperar('corregir el color no escala', requiereAtencionHumana('no es negro, lo quiero rojo'), false)
 }
 
 function main(): void {
@@ -427,6 +463,7 @@ function main(): void {
   verificarCierresYRespaldo()
   verificarRescate()
   verificarModelosDaytona()
+  verificarEscalamientoInmediato()
 
   console.log('')
   if (fallos > 0) {

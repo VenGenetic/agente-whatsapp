@@ -1,11 +1,12 @@
 export const DAYTONA_MODELS = [
-  'Wing Evo II', 'GP-1', 'GP-1 S', 'GP-1 R', 'GP-1 RR', 'Cobra', 'Feroce', 'GTR', 'GTR Roadster',
-  'Terrex', 'S1 Adventure', 'S1 Crossover', 'Tekken Evo', 'Tekken Discovery', 'Everest Dual Sport',
-  'Everest Off Road', 'Adventure', 'Adventure 300R', 'Arctic', 'Shark 1', 'Shark 3', 'Montana',
+  'Wing Evo 150', 'Wing Evo 200', 'Wing Evo II',
+  'GP-1', 'GP-1 S', 'GP-1 R', 'GP-1 RR', 'Cobra', 'Feroce', 'GTR', 'GTR Roadster',
+  'Terrex', 'S1 150', 'S1 Adventure', 'S1 Crossover', 'Tekken 250', 'Tekken Evo', 'Tekken Discovery', 'Everest Dual Sport',
+  'Everest Off Road', 'Adventure', 'Adventure 300R', 'Arctic', 'Shark 1', 'Shark 2', 'Shark 3', 'Montana',
   'Xpedition', 'Delta', 'Work Force', 'Spitfire', 'Crucero', 'Dynamic Pro', 'CX7 Pro', 'Tanq',
-  'Caballito', 'Bit Se Bi', 'Agility X', 'Eagle 5', 'Eagle Z', 'Scorpion', 'Wolf Evolution',
-  'Super Wolf', 'XPower', 'ZR', 'Arrow', 'Scrambler Max', 'Scrambler Revolution', 'Cafe Racer',
-  'Predator', 'Hunter 4', 'Commander',
+  'Caballito', 'Bit Se Bi', 'Agility X', 'Eagle 1', 'Eagle 2', 'Eagle 3', 'Eagle 4', 'Eagle 5', 'Eagle Z',
+  'Scorpion', 'Wolf', 'Wolf 250', 'Wolf Evolution', 'Super Wolf', 'XPower', 'ZR', 'Arrow',
+  'Scrambler Max', 'Scrambler Revolution', 'Cafe Racer', 'Predator', 'Hunter 4', 'Commander', 'Pasola Evo 2',
 ] as const
 
 /**
@@ -19,6 +20,14 @@ export function normalizeDaytonaText(value: string): string {
   return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
     .replace(/\bdaytona\b/g, '').replace(/\b(?:moto|modelo)\b/g, '')
     .replace(new RegExp(CILINDRAJE.source, 'g'), '')
+    .replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ')
+}
+
+/** Conserva los números para los pocos nombres donde distinguen el modelo. */
+function normalizeDaytonaIdentity(value: string): string {
+  return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+    .replace(/\bdaytona\b/g, '').replace(/\b(?:moto|modelo)\b/g, '')
+    .replace(/\b(\d+)\s*(?:cc|c\.?c\.?)\b/g, '$1')
     .replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ')
 }
 
@@ -37,12 +46,41 @@ function editDistance(a: string, b: string): number {
 }
 
 const aliases = new Map<string, string>(DAYTONA_MODELS.map((model) => [normalizeDaytonaText(model), model]))
-for (const [alias, model] of [['wing evo 2', 'Wing Evo II'], ['gp1', 'GP-1'], ['gp1 s', 'GP-1 S'],
-  ['gp1 r', 'GP-1 R'], ['gp1 rr', 'GP-1 RR'], ['x power', 'XPower'], ['workforce', 'Work Force'],
-  ['bit sebi', 'Bit Se Bi']] as const) aliases.set(alias, model)
+for (const [alias, model] of [
+  ['wing evo', 'Wing Evo 200'], ['wing evo 1', 'Wing Evo 200'], ['wing evo i', 'Wing Evo 200'],
+  ['wing evo 2', 'Wing Evo II'], ['wing evo2', 'Wing Evo II'], ['wing evo ii', 'Wing Evo II'], ['wing evo 202', 'Wing Evo II'],
+  ['gp1', 'GP-1'], ['gp1 250', 'GP-1'], ['gp1 s', 'GP-1 S'], ['gp1s', 'GP-1 S'],
+  ['gp1 r', 'GP-1 R'], ['gp1r', 'GP-1 R'], ['gp1 rr', 'GP-1 RR'], ['gp1rr', 'GP-1 RR'],
+  ['s1adv', 'S1 Adventure'], ['s1 adv', 'S1 Adventure'], ['crossover', 'S1 Crossover'],
+  ['eagle', 'Eagle 3'], ['eagle iii', 'Eagle 3'],
+  ['shark i', 'Shark 1'], ['shark1', 'Shark 1'], ['shark ii', 'Shark 2'], ['shark2', 'Shark 2'],
+  ['shark iii', 'Shark 3'], ['shark3', 'Shark 3'],
+  ['evo', 'Pasola Evo 2'], ['evo 2', 'Pasola Evo 2'], ['evo2', 'Pasola Evo 2'], ['evol', 'Pasola Evo 2'],
+  ['x power', 'XPower'], ['workforce', 'Work Force'], ['bit sebi', 'Bit Se Bi'],
+] as const) aliases.set(alias, model)
+
+// Estas familias no son versiones intercambiables. Se resuelven antes de
+// la normalización general, que elimina cilindradas para otros modelos.
+const familyModelAliases = new Map<string, string>([
+  ['wolf', 'Wolf'], ['wolf 200', 'Wolf'], ['wolf 250', 'Wolf 250'],
+  ['wolf evolution', 'Wolf Evolution'], ['wolf evolution 250', 'Wolf Evolution'],
+  ['super wolf', 'Super Wolf'], ['super wolf 300', 'Super Wolf'],
+  ['tekken 250', 'Tekken 250'],
+  ['tekken evo', 'Tekken Evo'], ['tekken discovery', 'Tekken Discovery'],
+  ['tekken discovery 300', 'Tekken Discovery'],
+  ['wing evo', 'Wing Evo 200'], ['wing evo 200', 'Wing Evo 200'],
+  ['wing evo 1', 'Wing Evo 200'], ['wing evo i', 'Wing Evo 200'],
+  ['wing evo 2', 'Wing Evo II'], ['wing evo ii', 'Wing Evo II'], ['wing evo 202', 'Wing Evo II'],
+])
+aliases.set('wolf', 'Wolf')
+// "Tekken" sin apellido es ambiguo: puede ser el 250 anterior, Evo o
+// Discovery. No puede normalizarse silenciosamente al primero de la lista.
+aliases.delete('tekken')
 
 export function canonicalDaytonaModel(value: unknown): string | null {
   if (typeof value !== 'string' || !value.trim()) return null
+  const familyModel = familyModelAliases.get(normalizeDaytonaIdentity(value))
+  if (familyModel) return familyModel
   const input = normalizeDaytonaText(value)
   const exact = aliases.get(input)
   if (exact) return exact
@@ -75,7 +113,7 @@ function nearestModels(value: string, limit = 4): string[] {
   return result
 }
 
-const EXAMPLES = ['Wing Evo II', 'Tekken Evo', 'Dynamic Pro', 'GP-1', 'Shark 1', 'Wolf Evolution']
+const EXAMPLES = ['Wing Evo 200', 'Tekken Evo', 'Wolf', 'GP-1', 'Shark 1', 'Eagle 3']
 
 /**
  * "Daytona 150", "una 200", "moto 300cc": marca y/o cilindrada, ningún
@@ -141,6 +179,28 @@ function modeloDeclaradoPorCliente(modelo: string, customerText: string): boolea
   return normalizeDaytonaText(customerText).includes(candidato)
 }
 
+function esTekkenSinVariante(modelo: string): boolean {
+  return normalizeDaytonaIdentity(modelo) === 'tekken'
+}
+
+function clienteDiceTekkenSinVariante(texto: string): boolean {
+  const identidad = normalizeDaytonaIdentity(texto)
+  return /\btekken\b/.test(identidad) && !/\btekken (?:250|evo|discovery)\b/.test(identidad)
+}
+
+function clienteDiceSharkSinVariante(texto: string): boolean {
+  const identidad = normalizeDaytonaIdentity(texto)
+  return /\bshark\b/.test(identidad) && !/\bshark\s*(?:1|i|2|ii|3|iii)\b/.test(identidad)
+}
+
+function preguntaShark(): string {
+  return '¿Cuál Shark tienes: Shark 1, Shark 2 o Shark 3?'
+}
+
+function preguntaTekken(): string {
+  return '¿Cuál Tekken tienes: Tekken 250 (modelo anterior), Tekken Evo 250 o Tekken Discovery 300?'
+}
+
 export function enforceDaytonaIntake(
   data: Record<string, any>,
   customerText: string,
@@ -148,12 +208,11 @@ export function enforceDaytonaIntake(
 ): Record<string, any> {
   const hasBrand = typeof data.marca === 'string' && data.marca.trim().length > 0
   if (hasBrand && !isDaytonaBrand(data.marca)) {
-    const equivalent = canonicalDaytonaModel(data.modelo_daytona_equivalente)
-    if (!options.currentPhotoReceived) return { ...data, modelo_daytona_equivalente: null, complete: false,
-      next_question: `Para revisar si tu ${data.marca}${data.modelo ? ` ${data.modelo}` : ''} equivale a un modelo Daytona, envíame una foto completa de la moto, de lado y con buena luz.` }
-    if (!equivalent) return { ...data, modelo_daytona_equivalente: null, complete: false,
-      next_question: 'Con esa foto no puedo confirmar el equivalente Daytona. ¿Puedes enviarme una foto completa de la moto de lado, donde se vean el tanque, faro y carenado?' }
-    return { ...data, modelo_daytona_equivalente: equivalent }
+    // Muchos repuestos se comparten entre marcas y la descripción del
+    // catálogo enumera los modelos compatibles. La recepción conserva la
+    // marca/modelo real del cliente; no inventa ni exige un equivalente
+    // Daytona solo por el parecido visual.
+    return { ...data, modelo_daytona_equivalente: null }
   }
   const rawModel = typeof data.modelo === 'string' ? data.modelo.trim() : ''
   const canonical = canonicalDaytonaModel(rawModel)
@@ -171,6 +230,12 @@ export function enforceDaytonaIntake(
     return { ...data, marca: 'Daytona', modelo: null,
       cilindraje: data.cilindraje ?? cilindrada, complete: false,
       next_question: preguntaConOpciones ?? daytonaModelQuestion(customerText, null, cilindrada) }
+  }
+  if (!canonical && (esTekkenSinVariante(rawModel) || (!rawModel && clienteDiceTekkenSinVariante(customerText)))) {
+    return { ...data, marca: 'Daytona', modelo: null, complete: false, next_question: preguntaTekken() }
+  }
+  if (!canonical && (clienteDiceSharkSinVariante(rawModel) || (!rawModel && clienteDiceSharkSinVariante(customerText)))) {
+    return { ...data, marca: 'Daytona', modelo: null, complete: false, next_question: preguntaShark() }
   }
   // Un modelo no conocido no se reemplaza por una sugerencia parecida ni se
   // le pregunta de nuevo al cliente si este ya lo escribió. El vendedor lo

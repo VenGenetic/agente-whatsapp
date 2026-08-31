@@ -19,6 +19,7 @@
     "verificar-rafagas": "tsx scripts/verificar-rafagas.ts",
     "limpiar-media": "tsx scripts/limpiar-media-vieja.ts",
     "verificar-recepcion": "tsx scripts/verificar-recepcion.ts",
+    "verificar-modelos-vendedor": "tsx scripts/verificar-modelos-vendedor.ts",
     "verificar-activacion": "tsx scripts/verificar-activacion.ts"
   },
   "dependencies": {

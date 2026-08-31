@@ -527,6 +527,10 @@ export async function activateConversationForIntake(conversationId: number): Pro
       selected_agent: 'intake',
       status: 'bot_active',
       etapa: 'new',
+      // Reserva este chat para el flujo reactivo que acaba de recibir el
+      // anuncio. Evita que el job proactivo mande la misma pregunta antes
+      // de que termine de procesarse este mensaje.
+      intake_started_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     })
     .eq('id', conversationId)
