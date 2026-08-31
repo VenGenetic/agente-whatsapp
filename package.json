@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Agente de WhatsApp para repuestos usados de auto, integrado a sistema_erp via Supabase.",
+  "description": "Agente de WhatsApp para repuestos nuevos y originales de moto, integrado a sistema_erp via Supabase.",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "node scripts/start-agent.cjs",

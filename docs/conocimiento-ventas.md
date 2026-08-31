@@ -3,6 +3,12 @@
 Estado: recopilación guiada con el negocio. Durante esta etapa solo está activo
 el agente de recepción; estas reglas no habilitan ventas automáticas.
 
+## Condición de los repuestos
+
+El negocio vende únicamente repuestos **nuevos y originales**. Nunca se debe
+decir ni insinuar que son usados, de segunda mano, reciclados, genéricos o
+alternativos.
+
 ## Principios operativos
 
 - La descripción de un repuesto es evidencia de compatibilidad: todos los
@@ -18,6 +24,8 @@ el agente de recepción; estas reglas no habilitan ventas automáticas.
   aros, pastillas, mordazas, cables y estribos sin base. Esto solo orienta la
   búsqueda; la descripción del catálogo es la fuente de compatibilidad.
 - No automatizar por ahora piezas de motor. Las atiende una persona.
+- Si el cliente envía una foto, el chat se deriva de inmediato a una persona;
+  la IA no usa imágenes para identificar pieza o modelo.
 - Si el cliente dice que no es la pieza que buscaba, la consulta se complica,
   pide proforma o descuento, debe atender una persona.
 - En ventas futuras, la respuesta confirmada debe incluir foto, precio y

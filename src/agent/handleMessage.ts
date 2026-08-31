@@ -298,6 +298,31 @@ async function escalate(
   await notifyOwner(sock, phoneNumber, reason, ownerContext)
 }
 
+/**
+ * Las fotos se reservan para revisión humana. No se pasan por Gemini: una
+ * identificación visual equivocada puede terminar en el repuesto incorrecto.
+ */
+async function escalatePhotoToHuman(
+  sock: WASocket,
+  conversationId: number,
+  phoneNumber: string,
+  customerMessage: string | null,
+): Promise<void> {
+  const snapshot = customerMessage?.trim()
+    ? `[Foto enviada] ${customerMessage.trim()}`
+    : '[Foto enviada: requiere revisión de un vendedor]'
+
+  await createEscalation({ conversationId, reason: 'other', messageSnapshot: snapshot })
+  await setConversationStatus(conversationId, 'escalated')
+  await cambiarEtapa({
+    conversationId,
+    etapa: 'human_assigned',
+    actor: 'intake',
+    motivo: 'El cliente envió una foto; revisión visual asignada a vendedor',
+  })
+  await notifyOwner(sock, phoneNumber, 'other', snapshot)
+}
+
 async function handleProductRequest(
   sock: WASocket,
   conversationId: number,
@@ -610,7 +635,6 @@ export function preguntaDeRespaldoDeRecepcion(data: FichaDeRecepcion): string {
   if (!data.repuesto) return '¿Qué repuesto estás buscando?'
   if (!data.marca && !data.modelo) return '¿Para qué marca y modelo de moto necesitas ese repuesto?'
   if (!data.modelo) return `¿Para qué modelo de moto necesitas el ${data.repuesto}?`
-  if (!data.anio) return `¿De qué año es tu ${data.modelo}?`
   return '¿Me confirmas el repuesto y el modelo de tu moto para ayudarte bien?'
 }
 
@@ -993,6 +1017,17 @@ export async function handleIncomingMessage(sock: WASocket, msg: WAMessage): Pro
     whatsappMessageId: msg.key.id ?? null,
     contentType: parsed.contentType,
   })
+
+  // Una imagen no se intenta interpretar automáticamente. Se registra y se
+  // manda de inmediato a la cola humana, aun si el chat todavía no estaba
+  // habilitado para recepción.
+  if (parsed.contentType === 'image'
+      && conversation.status !== 'escalated'
+      && conversation.status !== 'human_active'
+      && conversation.status !== 'closed') {
+    await escalatePhotoToHuman(sock, conversation.id, parsed.phoneNumber, parsed.body)
+    return
+  }
 
   // Los anuncios y botones de contacto de Meta llegan con esta frase
   // prellenada. Para esos clientes el propio mensaje inicia la recepción:

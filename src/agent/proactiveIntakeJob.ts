@@ -14,6 +14,8 @@ type PendingIntake = {
   customerName: string | null
   lid: string | null
   chatJid: string | null
+  /** Marca del último mensaje al momento de armar la cola. */
+  lastMessageAt: string | null
 }
 
 /**
@@ -24,7 +26,7 @@ type PendingIntake = {
 async function getPendingIntakes(limit: number): Promise<PendingIntake[]> {
   const { data, error } = await supabase
     .from('agent_conversations')
-    .select('id, phone_number, customer_name, lid, chat_jid')
+    .select('id, phone_number, customer_name, lid, chat_jid, last_message_at')
     .eq('bot_enabled', true)
     .eq('selected_agent', 'intake')
     .is('intake_started_at', null)
@@ -39,7 +41,62 @@ async function getPendingIntakes(limit: number): Promise<PendingIntake[]> {
     customerName: row.customer_name,
     lid: row.lid,
     chatJid: row.chat_jid,
+    lastMessageAt: row.last_message_at,
   }))
+}
+
+/**
+ * Reclama una conversación de forma atómica antes de llamar a Gemini.
+ *
+ * Dos vueltas del intervalo (o el flujo reactivo al mismo tiempo) podían
+ * leer la misma fila pendiente y las dos terminaban enviando una pregunta.
+ * La condición sobre `intake_started_at` permite que solo una gane. También
+ * exigimos que no haya entrado un mensaje desde que se armó la cola: si lo
+ * hubo, el flujo reactivo debe ser el único que responda.
+ */
+async function claimPendingIntake(conversation: PendingIntake): Promise<string | null> {
+  const claimedAt = new Date().toISOString()
+  let query = supabase
+    .from('agent_conversations')
+    .update({ intake_started_at: claimedAt })
+    .eq('id', conversation.id)
+    .eq('bot_enabled', true)
+    .eq('selected_agent', 'intake')
+    .eq('status', 'bot_active')
+    .is('intake_started_at', null)
+
+  query = conversation.lastMessageAt
+    ? query.eq('last_message_at', conversation.lastMessageAt)
+    : query.is('last_message_at', null)
+
+  const { data, error } = await query.select('id').maybeSingle()
+  if (error) throw error
+  return data ? claimedAt : null
+}
+
+/** Libera un reclamo fallido, sin pisar una actualización más nueva. */
+async function releasePendingIntakeClaim(conversationId: number, claimedAt: string): Promise<void> {
+  const { error } = await supabase
+    .from('agent_conversations')
+    .update({ intake_started_at: null })
+    .eq('id', conversationId)
+    .eq('intake_started_at', claimedAt)
+  if (error) throw error
+}
+
+/**
+ * `created_at` puede ser la hora original de WhatsApp cuando llega algo tras
+ * una reconexión. `last_message_at` usa la hora de ingreso, así que es la
+ * marca segura para saber si el cliente escribió mientras el job pensaba.
+ */
+async function customerWroteSince(conversationId: number, claimedAt: string): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('agent_conversations')
+    .select('last_message_at')
+    .eq('id', conversationId)
+    .maybeSingle()
+  if (error) throw error
+  return Boolean(data?.last_message_at && data.last_message_at > claimedAt)
 }
 
 /**
@@ -72,16 +129,17 @@ export async function runProactiveIntakeJob(sock: WASocket): Promise<void> {
   if (pending.length === 0) return
 
   for (const conversation of pending) {
+    let claimedAt: string | null = null
+    let sentToCustomer = false
     try {
+      claimedAt = await claimPendingIntake(conversation)
+      if (!claimedAt) continue
+
       const history = await getRecentHistory(conversation.id, 15)
       if (history.length === 0) {
-        // Sin nada que leer no hay contexto para arrancar -- se marca igual
-        // para no reintentar en loop; cuando el cliente escriba, el flujo
-        // reactivo normal lo atiende.
-        await supabase
-          .from('agent_conversations')
-          .update({ intake_started_at: new Date().toISOString() })
-          .eq('id', conversation.id)
+        // Sin nada que leer no hay contexto para arrancar. El reclamo ya
+        // la deja marcada para no reintentar en loop; si el cliente escribe,
+        // el flujo reactivo normal lo atiende.
         continue
       }
 
@@ -91,6 +149,13 @@ export async function runProactiveIntakeJob(sock: WASocket): Promise<void> {
         customerMessage: lastInbound?.body ?? '(el cliente escribió antes, sin texto)',
       })
 
+      // Si llegó algo mientras Gemini procesaba, no se usa la conclusión
+      // del historial anterior ni siquiera para avisarle al equipo.
+      if (await customerWroteSince(conversation.id, claimedAt)) {
+        console.log(`Recepción proactiva cancelada en #${conversation.id}: el cliente escribió mientras se procesaba.`)
+        continue
+      }
+
       // El permiso pudo cambiar durante la llamada al modelo.
       if (!(await puedeResponderAhora(conversation.id, 'intake'))) continue
 
@@ -99,10 +164,6 @@ export async function runProactiveIntakeJob(sock: WASocket): Promise<void> {
       // mensaje que no pidió sin necesidad sería justo lo que queremos
       // evitar).
       if (result.complete || result.needsHuman || !result.nextQuestion?.trim()) {
-        await supabase
-          .from('agent_conversations')
-          .update({ intake_started_at: new Date().toISOString() })
-          .eq('id', conversation.id)
         await sock.sendMessage(toWhatsAppJid(config.ownerPhoneNumber), {
           text: result.complete
             ? `El historial de ${conversation.customerName ?? conversation.phoneNumber} ya tenía todos los datos:\n${await resumenParaElVendedor(result.data)}`
@@ -112,6 +173,15 @@ export async function runProactiveIntakeJob(sock: WASocket): Promise<void> {
       }
 
       await humanDelay()
+      // Mientras Gemini procesaba o durante la pausa humana pudo llegar un
+      // mensaje. No se responde a un historial viejo: la respuesta reactiva
+      // de ese nuevo mensaje es la que corresponde.
+      if (await customerWroteSince(conversation.id, claimedAt)) {
+        console.log(`Recepción proactiva cancelada en #${conversation.id}: el cliente escribió mientras se procesaba.`)
+        continue
+      }
+      // El estado también puede haber cambiado durante la pausa.
+      if (!(await puedeResponderAhora(conversation.id, 'intake'))) continue
       // Se usa la dirección REAL guardada del chat (`chat_jid`), no una
       // reconstruida a partir del teléfono: reconstruirla mal hacía que
       // los mensajes a chats por LID se perdieran en silencio -- WhatsApp
@@ -120,6 +190,7 @@ export async function runProactiveIntakeJob(sock: WASocket): Promise<void> {
       const jid =
         conversation.chatJid ?? toChatJid({ phone_number: conversation.phoneNumber, lid: conversation.lid })
       const sent = await sock.sendMessage(jid, { text: result.nextQuestion })
+      sentToCustomer = true
       await logOutboundMessage(conversation.id, {
         body: result.nextQuestion,
         actionTaken: 'asked_clarification',
@@ -128,13 +199,17 @@ export async function runProactiveIntakeJob(sock: WASocket): Promise<void> {
         // mensaje aparte y quedaría duplicado en el historial.
         whatsappMessageId: sent?.key?.id ?? null,
       })
-      await supabase
-        .from('agent_conversations')
-        .update({ intake_started_at: new Date().toISOString() })
-        .eq('id', conversation.id)
-
       console.log(`Recepción arrancada en el chat de ${conversation.phoneNumber}.`)
     } catch (err) {
+      // Si ni siquiera se alcanzó a escribir al cliente, se libera solo
+      // nuestro reclamo para reintentar luego. Si WhatsApp ya aceptó el
+      // envío, conservarlo es crucial: repetir sería peor que un fallo al
+      // registrar el eco.
+      if (claimedAt && !sentToCustomer) {
+        await releasePendingIntakeClaim(conversation.id, claimedAt).catch((releaseErr) => {
+          console.error(`No se pudo liberar el reclamo de la conversación #${conversation.id}:`, releaseErr)
+        })
+      }
       console.error(`No se pudo arrancar la recepción en la conversación #${conversation.id}:`, err)
     }
   }

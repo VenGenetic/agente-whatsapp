@@ -17,8 +17,16 @@ import {
 
 /** Tope por vuelta: si se acumulan muchos, se mandan de a tandas. */
 const POR_VUELTA = 5
-/** A partir de acá se deja de reintentar y queda marcado como fallido. */
-const MAX_INTENTOS = 3
+/**
+ * A partir de acá se deja de reintentar y queda marcado como fallido.
+ * Una desconexión de WhatsApp puede durar varios minutos: tres intentos
+ * seguidos agotaban la cola antes de que el socket se recuperara.
+ */
+const MAX_INTENTOS = 7
+/** Primera espera tras una caída; las siguientes crecen progresivamente. */
+const RETRY_BASE_DELAY_MS = 15_000
+/** No se posterga un mensaje más de diez minutos entre intentos. */
+const RETRY_MAX_DELAY_MS = 10 * 60_000
 
 /** Lo que puede llevar un mensaje encolado desde el ERP (migraciones 0026 y 0030). */
 type TipoSalida = 'text' | 'image' | 'video' | 'document' | 'audio' | 'delete' | 'reaction' | 'edit' | 'read' | 'unread'
@@ -138,6 +146,9 @@ const CAMPOS_BASE =
 const CAMPOS_COMPLETOS =
   'id, conversation_id, body, kind, media_url, media_mime, media_filename, is_voice_note, target_wa_id, reply_to_wa_id, reaction_emoji, product_id, intentos, agent_conversations ( phone_number, lid, chat_jid )'
 
+/** Se detecta una vez para poder desplegar el worker antes de aplicar 0042. */
+let tieneReintentosProgramados: boolean | null = null
+
 /**
  * Lee los pendientes.
  *
@@ -149,8 +160,8 @@ const CAMPOS_COMPLETOS =
  * como audio normal hasta que se aplique.
  */
 async function leerPendientes(): Promise<Pendiente[]> {
-  const consulta = (campos: string) =>
-    supabase
+  const consulta = (campos: string, respetarEspera: boolean) => {
+    let query = supabase
       .from('agent_outbox')
       .select(campos)
       .eq('status', 'pending')
@@ -159,8 +170,14 @@ async function leerPendientes(): Promise<Pendiente[]> {
       // precio, al cliente le tienen que llegar en ese mismo orden.
       .order('created_at', { ascending: true })
       .limit(POR_VUELTA)
+    if (respetarEspera) {
+      query = query.lte('next_attempt_at', new Date().toISOString())
+    }
+    return query
+  }
 
-  const { data, error } = await consulta(CAMPOS_COMPLETOS)
+  const usarEspera = tieneReintentosProgramados !== false
+  const { data, error } = await consulta(CAMPOS_COMPLETOS, usarEspera)
   if (!error) return (data ?? []) as unknown as Pendiente[]
 
   if (error.code !== '42703') throw error
@@ -171,7 +188,16 @@ async function leerPendientes(): Promise<Pendiente[]> {
     'Faltan columnas de agent_outbox (migraciones 0030/0031): ' +
       'se despacha sin notas de voz ni acciones sobre mensajes hasta aplicarlas.',
   )
-  const { data: basico, error: errorBasico } = await consulta(CAMPOS_BASE)
+  if (usarEspera) {
+    const { data: sinEspera, error: errorSinEspera } = await consulta(CAMPOS_COMPLETOS, false)
+    if (!errorSinEspera) {
+      tieneReintentosProgramados = false
+      console.warn('Falta next_attempt_at (migración 0042): se reintenta sin espera hasta aplicarla.')
+      return (sinEspera ?? []) as unknown as Pendiente[]
+    }
+  }
+
+  const { data: basico, error: errorBasico } = await consulta(CAMPOS_BASE, false)
   if (errorBasico) throw errorBasico
   return ((basico ?? []) as unknown[]).map((f) => ({
     ...(f as Pendiente),
@@ -180,6 +206,42 @@ async function leerPendientes(): Promise<Pendiente[]> {
     reply_to_wa_id: null,
     reaction_emoji: null,
   }))
+}
+
+/** Espera exponencial para que una caída temporal no agote la cola de golpe. */
+function proximoIntento(intentoFallido: number): string {
+  const espera = Math.min(RETRY_BASE_DELAY_MS * 2 ** Math.max(0, intentoFallido - 1), RETRY_MAX_DELAY_MS)
+  return new Date(Date.now() + espera).toISOString()
+}
+
+/**
+ * Programa el siguiente reintento. La caída controlada al formato anterior
+ * permite desplegar primero el worker y aplicar 0042 después, sin que una
+ * cola existente quede trabada si falta la columna nueva.
+ */
+async function guardarFalloDeEnvio(item: Pendiente, intentos: number, mensaje: string): Promise<void> {
+  // Sin 0042 se conserva el límite histórico: no se habilitan siete
+  // reintentos seguidos hasta que la base pueda espaciarlos de verdad.
+  const limite = tieneReintentosProgramados === false ? 3 : MAX_INTENTOS
+  const estado = intentos >= limite ? 'failed' : 'pending'
+  const cambio = {
+    intentos,
+    status: estado,
+    // También queda con fecha en los fallidos: la columna es obligatoria y
+    // esa fecha no se vuelve a consultar porque el estado ya no es pending.
+    next_attempt_at: estado === 'failed' ? new Date().toISOString() : proximoIntento(intentos),
+    error: mensaje,
+  }
+  const { error } = await supabase.from('agent_outbox').update(cambio).eq('id', item.id)
+  if (!error) return
+  if (error.code !== '42703') throw error
+
+  console.warn('Falta next_attempt_at (migración 0042): se guardó el fallo sin espera programada.')
+  const { error: errorAnterior } = await supabase
+    .from('agent_outbox')
+    .update({ intentos, status: estado, error: mensaje })
+    .eq('id', item.id)
+  if (errorAnterior) throw errorAnterior
 }
 
 export async function runOutboxJob(sock: WASocket): Promise<number> {
@@ -371,6 +433,18 @@ export async function runOutboxJob(sock: WASocket): Promise<number> {
     } catch (err) {
       const mensaje = err instanceof Error ? err.message : String(err)
 
+      // Marcar leído/no leído no es un mensaje al cliente. Durante una caída
+      // del socket esos acuses no deben llenar la bandeja con fallos ni
+      // competir con mensajes reales que sí necesitan reintento.
+      if (item.kind === 'read' || item.kind === 'unread') {
+        await supabase
+          .from('agent_outbox')
+          .update({ status: 'sent', sent_at: new Date().toISOString(), error: null })
+          .eq('id', item.id)
+        console.warn(`Outbox: no se pudo ${item.kind === 'read' ? 'marcar leído' : 'marcar no leído'} #${item.id}; se omitió por ser una acción visual interna: ${mensaje}`)
+        continue
+      }
+
       // Último intento de un mensaje con foto y con texto: antes de darlo
       // por perdido se manda al menos el texto. Se comprobó en vivo que la
       // subida de imagen a WhatsApp puede fallar ("Connection Closed")
@@ -401,16 +475,9 @@ export async function runOutboxJob(sock: WASocket): Promise<number> {
       }
 
       const intentos = item.intentos + 1
-      await supabase
-        .from('agent_outbox')
-        .update({
-          intentos,
-          // Recién se da por perdido tras varios intentos: una caída
-          // momentánea de red no debería descartar el mensaje.
-          status: intentos >= MAX_INTENTOS ? 'failed' : 'pending',
-          error: mensaje,
-        })
-        .eq('id', item.id)
+      // Recién se da por perdido tras varios intentos espaciados: una caída
+      // momentánea de red no debería descartar el mensaje.
+      await guardarFalloDeEnvio(item, intentos, mensaje)
       console.error(`Outbox: fallo enviando el mensaje #${item.id} (intento ${intentos}):`, mensaje)
     }
   }

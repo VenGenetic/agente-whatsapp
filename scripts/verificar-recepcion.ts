@@ -18,7 +18,7 @@
  * Uso: npm run verificar-recepcion
  */
 import { correspondeSaludar, esSaludoPuro, textoDeSaludo } from '../src/agent/saludos.js'
-import { requiereAtencionHumana, rescatarLoLimpio } from '../src/agent/intake.js'
+import { formatIntakeSummary, requiereAtencionHumana, rescatarLoLimpio } from '../src/agent/intake.js'
 import {
   canonicalDaytonaModel,
   cilindrajeSinModelo,
@@ -294,9 +294,19 @@ function verificarCierresYRespaldo(): void {
     '¿Para qué marca y modelo de moto necesitas ese repuesto?',
   )
   esperar(
-    'con modelo pero sin año pregunta el año',
+    'con modelo pero sin año no lo exige',
     preguntaDeRespaldoDeRecepcion({ ...base, repuesto: 'tanque', marca: 'Daytona', modelo: 'Tekken Evo' }),
-    '¿De qué año es tu Tekken Evo?',
+    '¿Me confirmas el repuesto y el modelo de tu moto para ayudarte bien?',
+  )
+  esperar(
+    'el resumen no inventa un año faltante',
+    formatIntakeSummary({ ...base, repuesto: 'tanque', marca: 'Daytona', modelo: 'Tekken Evo' }).includes('Año:'),
+    false,
+  )
+  esperar(
+    'el resumen conserva el año que el cliente sí dio',
+    formatIntakeSummary({ ...base, repuesto: 'tanque', marca: 'Daytona', modelo: 'Tekken Evo', anio: '2023' }).includes('Año: 2023'),
+    true,
   )
 }
 
