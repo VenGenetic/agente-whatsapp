@@ -1,5 +1,6 @@
 import { supabase } from '../supabaseClient.js'
 import type { IntakeData } from '../agent/intake.js'
+import { observeConfirmedPartAlias } from './requestKnowledge.js'
 
 /**
  * La ficha que arma el agente de recepción, guardada como DATOS y no como
@@ -47,6 +48,7 @@ function faltaLaMigracion(error: { code?: string } | null | undefined): boolean 
 }
 
 let avisadoQueFalta = false
+let avisadoQueFaltaAprendizaje = false
 
 function avisarUnaVez(): void {
   if (avisadoQueFalta) return
@@ -56,10 +58,34 @@ function avisarUnaVez(): void {
   )
 }
 
+/**
+ * La migración 0043 es opcional para poder desplegar el código primero sin
+ * dejar de guardar fichas. Si todavía falta, se omite únicamente el campo
+ * que aprende el alias; la recepción y el vendedor conservan su operación
+ * normal.
+ */
+function faltaCampoDeAprendizaje(error: { code?: string; message?: string } | null | undefined): boolean {
+  return error?.code === 'PGRST204' && /repuesto_cliente/i.test(error.message ?? '')
+}
+
+function avisarFaltaAprendizajeUnaVez(): void {
+  if (avisadoQueFaltaAprendizaje) return
+  avisadoQueFaltaAprendizaje = true
+  console.warn(
+    'Falta la migración 0043: la ficha se seguirá guardando, pero todavía no aprenderá alias de repuestos.',
+  )
+}
+
+function sinCampoDeAprendizaje(fila: Record<string, unknown>): Record<string, unknown> {
+  const { repuesto_cliente: _repuestoCliente, ...compatible } = fila
+  return compatible
+}
+
 /** Los campos tal como van a la tabla. */
 function comoFila(datos: FichaDeRecepcion): Record<string, unknown> {
   return {
     repuesto: datos.repuesto,
+    repuesto_cliente: datos.repuestoCliente,
     marca: datos.marca,
     modelo: datos.modelo,
     anio: datos.anio,
@@ -98,14 +124,28 @@ export async function guardarBorrador(conversationId: number, datos: FichaDeRece
   }
 
   if (abierto) {
-    const { error } = await supabase.from('agent_intake_requests').update(comoFila(datos)).eq('id', abierto.id)
+    const fila = comoFila(datos)
+    let { error } = await supabase.from('agent_intake_requests').update(fila).eq('id', abierto.id)
+    if (faltaCampoDeAprendizaje(error)) {
+      avisarFaltaAprendizajeUnaVez()
+      const reintento = await supabase.from('agent_intake_requests').update(sinCampoDeAprendizaje(fila)).eq('id', abierto.id)
+      error = reintento.error
+    }
     if (error) console.error('No se pudo actualizar el borrador de la ficha:', error.message)
     return
   }
 
-  const { error } = await supabase
+  const fila = { conversation_id: conversationId, estado: 'borrador', ...comoFila(datos) }
+  let { error } = await supabase
     .from('agent_intake_requests')
-    .insert({ conversation_id: conversationId, estado: 'borrador', ...comoFila(datos) })
+    .insert(fila)
+  if (faltaCampoDeAprendizaje(error)) {
+    avisarFaltaAprendizajeUnaVez()
+    const reintento = await supabase
+      .from('agent_intake_requests')
+      .insert(sinCampoDeAprendizaje(fila))
+    error = reintento.error
+  }
   if (error) {
     // 23505: otro mensaje de la misma ráfaga creó el borrador entre la
     // consulta y este insert. No es un problema -- el dato ya está.
@@ -145,7 +185,7 @@ export async function marcarFichaLista(
     .maybeSingle()
 
   if (abierto) {
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from('agent_intake_requests')
       .update(fila)
       .eq('id', abierto.id)
@@ -154,25 +194,49 @@ export async function marcarFichaLista(
       .eq('estado', 'borrador')
       .select('id')
       .maybeSingle()
+    if (faltaCampoDeAprendizaje(error)) {
+      avisarFaltaAprendizajeUnaVez()
+      const reintento = await supabase
+        .from('agent_intake_requests')
+        .update(sinCampoDeAprendizaje(fila))
+        .eq('id', abierto.id)
+        .eq('estado', 'borrador')
+        .select('id')
+        .maybeSingle()
+      data = reintento.data
+      error = reintento.error
+    }
     if (error) {
       if (faltaLaMigracion(error)) avisarUnaVez()
       else console.error('No se pudo cerrar la ficha de recepción:', error.message)
       return null
     }
+    if (data?.id) await observeConfirmedPartAlias(datos.repuestoCliente, datos.repuesto)
     return data?.id ?? null
   }
 
   // Sin borrador previo (la recepción terminó en un solo mensaje, o el
   // borrador falló antes): se crea ya cerrada.
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from('agent_intake_requests')
     .insert({ conversation_id: conversationId, ...fila })
     .select('id')
     .maybeSingle()
+  if (faltaCampoDeAprendizaje(error)) {
+    avisarFaltaAprendizajeUnaVez()
+    const reintento = await supabase
+      .from('agent_intake_requests')
+      .insert({ conversation_id: conversationId, ...sinCampoDeAprendizaje(fila) })
+      .select('id')
+      .maybeSingle()
+    data = reintento.data
+    error = reintento.error
+  }
   if (error) {
     if (faltaLaMigracion(error)) avisarUnaVez()
     else console.error('No se pudo crear la ficha de recepción:', error.message)
     return null
   }
+  if (data?.id) await observeConfirmedPartAlias(datos.repuestoCliente, datos.repuesto)
   return data?.id ?? null
 }

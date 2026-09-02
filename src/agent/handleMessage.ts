@@ -20,7 +20,7 @@ import { guardarBorrador, marcarFichaLista, type FichaDeRecepcion } from '../db/
 import { createEscalation, type EscalationReason } from '../db/escalations.js'
 import { interpretMessage, type InterpretedItem, type InterpretResult } from '../gemini/interpret.js'
 import { runIntake } from './intake.js'
-import { resumenParaElVendedor } from './intakeHandoff.js'
+import { buscarCatalogoParaRecepcion, resumenParaElVendedor, resumenParaElVendedorConCatalogo } from './intakeHandoff.js'
 import { nombreDePila } from './nombreDelCliente.js'
 import { isAutoActivationMessage } from './autoActivation.js'
 import { esDesistimiento, RESPUESTA_DE_DESISTIMIENTO } from './cierreDeConversacion.js'
@@ -296,6 +296,80 @@ async function escalate(
     agent: options?.agent ?? 'sales',
   })
   await notifyOwner(sock, phoneNumber, reason, ownerContext)
+}
+
+/**
+ * Pasa el chat a una persona sin agregar otro mensaje automático. Se usa
+ * después de una sugerencia de catálogo: el cliente ya recibió la foto y el
+ * precio, y ahora alguien del equipo debe comprobar el stock real. También
+ * evita que el bot siga proponiendo alternativas si el cliente rechaza la
+ * pieza mostrada.
+ */
+async function assignToHumanSilently(
+  sock: WASocket,
+  conversationId: number,
+  phoneNumber: string,
+  ownerContext: string,
+): Promise<void> {
+  await createEscalation({ conversationId, reason: 'other', messageSnapshot: ownerContext })
+  await setConversationStatus(conversationId, 'escalated')
+  await cambiarEtapa({
+    conversationId,
+    etapa: 'human_assigned',
+    actor: 'intake',
+    motivo: 'Recepción terminada; una persona debe revisar la pieza y confirmar stock',
+  })
+  await notifyOwner(sock, phoneNumber, 'other', ownerContext)
+}
+
+/**
+ * Esta foto no admite respaldo a texto. Si WhatsApp no puede descargar la
+ * imagen, es mejor que una persona la mande después que decir "te envié la
+ * foto" sin haberla enviado. El precio viaja como pie de foto y nunca se
+ * menciona disponibilidad.
+ */
+async function sendCatalogSuggestionPhotoAndLog(
+  sock: WASocket,
+  conversationId: number,
+  chatJid: string,
+  text: string,
+  imageUrl: string,
+  productId: number,
+  matchConfidence: number,
+): Promise<boolean> {
+  await humanDelay()
+  if (!(await puedeResponderAhora(conversationId, 'intake'))) {
+    console.log(`Sugerencia de catálogo cancelada: el permiso del chat #${conversationId} cambió mientras se procesaba.`)
+    return false
+  }
+
+  try {
+    const sent = await sock.sendMessage(chatJid, { image: { url: imageUrl }, caption: text })
+    // El mensaje ya llegó a WhatsApp. Un fallo posterior al guardarlo no
+    // puede reescribir la historia como "la foto falló" ni disparar otro
+    // mensaje al cliente; queda en el log para que se investigue.
+    try {
+      await logOutboundMessage(conversationId, {
+        body: text,
+        productId,
+        matchConfidence,
+        contentType: 'image',
+        mediaUrl: imageUrl,
+        // No es una confirmación de stock: solo una sugerencia con foto y
+        // valor. Se reutiliza un valor ya permitido para no exigir una
+        // migración antes de que el cambio sea seguro de desplegar.
+        actionTaken: 'none',
+        agent: 'intake',
+        whatsappMessageId: sent?.key?.id ?? null,
+      })
+    } catch (logError) {
+      console.error('La sugerencia se envió, pero no se pudo registrar en el ERP:', logError)
+    }
+    return true
+  } catch (err) {
+    console.error(`No se pudo enviar la foto de sugerencia (${imageUrl}):`, err)
+    return false
+  }
 }
 
 /**
@@ -619,10 +693,10 @@ async function handleProcessingFailure(
 }
 
 /**
- * Modo recepción (`AGENT_MODE=intake`): el bot NO consulta el catálogo ni
- * dice precios/stock/fotos -- solo le saca al cliente los datos de lo que
- * necesita (repuesto, marca, modelo, año, y color si aplica) y, cuando ya
- * los tiene todos, pasa la conversación a un humano con el resumen.
+ * Modo recepción (`AGENT_MODE=intake`): junta y confirma los datos del
+ * repuesto. Al terminar, consulta el catálogo una sola vez y solo manda
+ * foto/precio si la coincidencia es estricta; el stock siempre lo confirma
+ * una persona.
  * Ver docs/system-prompts.md.
  */
 /**
@@ -632,9 +706,14 @@ async function handleProcessingFailure(
  * conserva lo que ya pudo extraerse.
  */
 export function preguntaDeRespaldoDeRecepcion(data: FichaDeRecepcion): string {
-  if (!data.repuesto) return '¿Qué repuesto estás buscando?'
-  if (!data.marca && !data.modelo) return '¿Para qué marca y modelo de moto necesitas ese repuesto?'
-  if (!data.modelo) return `¿Para qué modelo de moto necesitas el ${data.repuesto}?`
+  const detalleCondicional = ' Si es plástico o carrocería, agrega la parte concreta y el color; si va de un lado, indica izquierda o derecha sentado en la moto.'
+  if (!data.repuesto) {
+    return `Para ayudarte, indícame el repuesto y la marca y modelo exacto de tu moto.${detalleCondicional}`
+  }
+  if (!data.marca && !data.modelo) {
+    return `Para el ${data.repuesto}, indícame la marca y el modelo exacto de tu moto.${detalleCondicional}`
+  }
+  if (!data.modelo) return `Para el ${data.repuesto}, ¿qué modelo exacto de moto tienes?${detalleCondicional}`
   return '¿Me confirmas el repuesto y el modelo de tu moto para ayudarte bien?'
 }
 
@@ -676,27 +755,66 @@ async function processIntakeMessage(
   }
 
   if (result.complete) {
-    // Ya están todos los datos. La ficha se cierra ANTES de escalar: si el
-    // envío falla, lo que no se puede perder es el trabajo de recepción.
-    const resumen = await resumenParaElVendedor(result.data)
-    await marcarFichaLista(conversation.id, ficha, { resumen, cerrada_at: new Date().toISOString() })
+    // Ya están todos los datos y el cliente los confirmó. La ficha se
+    // cierra ANTES de buscar/enviar: aunque falle el catálogo o WhatsApp,
+    // una persona recibe el trabajo completo y no vuelve a preguntarle.
+    let catalogo: Awaited<ReturnType<typeof buscarCatalogoParaRecepcion>> | null = null
+    let resumen: string
+    try {
+      catalogo = await buscarCatalogoParaRecepcion(result.data)
+      resumen = resumenParaElVendedorConCatalogo(result.data, catalogo)
+    } catch (err) {
+      console.error('No se pudo buscar en el catálogo al terminar la recepción:', err)
+      resumen = await resumenParaElVendedor(result.data)
+    }
 
-    // Se sigue escalando y avisando al dueño por WhatsApp aunque ahora
-    // exista la etapa: es de lo que el equipo depende hoy para enterarse,
-    // y sacarlo antes de que la bandeja demuestre que ya no hace falta
-    // sería dejar las fichas acumulándose sin que nadie las mire.
-    await escalate(sock, conversation.id, parsed.phoneNumber, parsed.chatJid, 'other', history, customerMessage, {
-      instruction:
-        'Agradecele los datos y avísale que en breve alguien del equipo le confirma disponibilidad y precio. NO le des precio ni disponibilidad vos.',
-      // El resumen incluye lo que encontró el catálogo con esos datos
-      // (SKU, precio, stock): el vendedor abre el chat y ya sabe de qué
-      // producto se habla, en vez de tener que ir a buscarlo él.
-      ownerContext: `[Datos del cliente listos]\n${resumen}\n\nÚltimo mensaje: "${customerMessage}"`,
-      agent: 'intake',
-      // La única escalación que NO es "algo salió mal": la ficha está
-      // completa y lo que sigue es cotizar.
-      etapa: 'ready_for_sales',
+    const sugerencia = catalogo?.suggestion ?? null
+    await marcarFichaLista(conversation.id, ficha, {
+      resumen,
+      cerrada_at: new Date().toISOString(),
+      catalogo_consultado: catalogo?.query ?? null,
+      sugerencia_enviada: sugerencia
+        ? {
+            product_id: sugerencia.productId,
+            nombre: sugerencia.name,
+            sku: sugerencia.sku,
+            precio: roundedCustomerPrice(sugerencia.price),
+            confianza: sugerencia.matchConfidence,
+          }
+        : null,
     })
+
+    const ownerContextBase = `[Datos del cliente listos]\n${resumen}\n\nÚltimo mensaje: "${customerMessage}"`
+    if (sugerencia?.imageUrl) {
+      const value = roundedCustomerPrice(sugerencia.price)
+      const caption = `Te comparto la foto del ${sugerencia.name}. Su valor es $${value}. Una persona del equipo te confirma la disponibilidad.`
+      const photoSent = await sendCatalogSuggestionPhotoAndLog(
+        sock,
+        conversation.id,
+        parsed.chatJid,
+        caption,
+        sugerencia.imageUrl,
+        sugerencia.productId,
+        sugerencia.matchConfidence,
+      )
+      await assignToHumanSilently(
+        sock,
+        conversation.id,
+        parsed.phoneNumber,
+        `${ownerContextBase}\n\n${photoSent ? 'Se envió foto y precio al cliente.' : 'No se pudo enviar la foto; mandarla manualmente.'}\nConfirmar stock real antes de vender.`,
+      )
+      return
+    }
+
+    // Sin una coincidencia estricta (o sin foto/precio completo) no se
+    // menciona un producto al cliente. La tarea queda directamente en la
+    // cola humana, sin el mensaje automático genérico de antes.
+    await assignToHumanSilently(
+      sock,
+      conversation.id,
+      parsed.phoneNumber,
+      `${ownerContextBase}\n\nNo se envió sugerencia automática; revisar catálogo y stock manualmente.`,
+    )
     return
   }
 

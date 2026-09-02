@@ -30,6 +30,8 @@ import { campoContaminado, limpiarTextoParaElCliente, textoCorrupto } from '../s
 import { nombreDePila } from '../src/agent/nombreDelCliente.js'
 import { decidirAgente, preguntaDeRespaldoDeRecepcion } from '../src/agent/handleMessage.js'
 import { esDesistimiento } from '../src/agent/cierreDeConversacion.js'
+import { esSugerenciaDeCatalogoSegura } from '../src/agent/intakeHandoff.js'
+import type { ProductMatch } from '../src/matching/searchProducts.js'
 import type { Etapa } from '../src/db/etapas.js'
 
 let fallos = 0
@@ -107,6 +109,8 @@ function verificarSaludos(): void {
   // más de mostrador. Lo que no puede faltar es el pedido en sí.
   const cien = Array.from({ length: 100 }, () => textoDeSaludo())
   esperar('siempre pide el repuesto o la moto', cien.every((s) => /repuesto|pieza|buscando|ayudar/i.test(s)), true)
+  esperar('siempre pide marca y modelo en el mismo mensaje', cien.every((s) => /marca|modelo|moto/i.test(s)), true)
+  esperar('siempre anticipa color y lado si aplican', cien.every((s) => /plástico|carrocería/i.test(s) && /lado/i.test(s)), true)
   esperar('nunca sale vacío', cien.every((s) => s.trim().length > 10), true)
   esperar('hay variedad real (más de 10 textos distintos en 100)', new Set(cien).size > 10, true)
 }
@@ -277,6 +281,7 @@ function verificarCierresYRespaldo(): void {
 
   const base = {
     repuesto: null,
+    repuestoCliente: null,
     marca: null,
     modelo: null,
     modeloDaytonaEquivalente: null,
@@ -287,11 +292,15 @@ function verificarCierresYRespaldo(): void {
     observaciones: null,
     fotoRecibida: false,
   }
-  esperar('sin pieza pregunta la pieza', preguntaDeRespaldoDeRecepcion(base), '¿Qué repuesto estás buscando?')
   esperar(
-    'con pieza pero sin moto pregunta marca y modelo',
+    'sin pieza pide todos los datos básicos juntos',
+    preguntaDeRespaldoDeRecepcion(base),
+    'Para ayudarte, indícame el repuesto y la marca y modelo exacto de tu moto. Si es plástico o carrocería, agrega la parte concreta y el color; si va de un lado, indica izquierda o derecha sentado en la moto.',
+  )
+  esperar(
+    'con pieza pero sin moto pide marca, modelo y los datos condicionales',
     preguntaDeRespaldoDeRecepcion({ ...base, repuesto: 'tanque' }),
-    '¿Para qué marca y modelo de moto necesitas ese repuesto?',
+    'Para el tanque, indícame la marca y el modelo exacto de tu moto. Si es plástico o carrocería, agrega la parte concreta y el color; si va de un lado, indica izquierda o derecha sentado en la moto.',
   )
   esperar(
     'con modelo pero sin año no lo exige',
@@ -384,6 +393,15 @@ function verificarModelosDaytona(): void {
   const tekkenAmbiguoSinModelo = enforceDaytonaIntake({ marca: 'Daytona', modelo: null, complete: false },
     'busco plásticos para mi Daytona Tekken')
   esperar('Tekken ambiguo se pregunta aun si la IA dejó modelo vacío', /Tekken 250.*Tekken Evo 250.*Tekken Discovery 300/s.test(tekkenAmbiguoSinModelo.next_question), true)
+  const tekkenConDatosPendientes = enforceDaytonaIntake({
+    marca: 'Daytona', modelo: 'Tekken', repuesto: 'plásticos', color_aplica: true, color: null,
+    posicion_aplica: true, posicion: null, complete: false,
+  }, 'busco plásticos para mi Daytona Tekken')
+  esperar(
+    'Tekken ambiguo también pide pieza, color y lado en el mismo mensaje',
+    /Tekken 250.*pieza concreta.*color.*izquierdo o derecho/s.test(tekkenConDatosPendientes.next_question),
+    true,
+  )
   esperar('Daytona mal escrito sigue siendo la marca', isDaytonaBrand('Daitona'), true)
   esperar('una marca distinta no se confunde con Daytona', isDaytonaBrand('Shineray'), false)
   esperar('Shark sin número queda ambiguo', canonicalDaytonaModel('Shark'), null)
@@ -462,6 +480,66 @@ function verificarEscalamientoInmediato(): void {
   esperar('corregir el color no escala', requiereAtencionHumana('no es negro, lo quiero rojo'), false)
 }
 
+function verificarSugerenciasDeCatalogo(): void {
+  console.log('\nCuándo una coincidencia se puede mostrar al cliente')
+  const datos = {
+    repuesto: 'tanque',
+    repuestoCliente: null,
+    marca: 'Daytona',
+    modelo: 'Wolf',
+    modeloDaytonaEquivalente: null,
+    anio: null,
+    color: 'negro',
+    posicion: 'izquierdo',
+    cilindraje: null,
+    observaciones: null,
+  }
+  const match: ProductMatch = {
+    productId: 1,
+    name: 'TANQUE WOLF NEGRO IZQ',
+    sku: 'TAN-WOLF-NEG-IZQ',
+    price: 70,
+    imageUrl: 'https://catalogo.example/tanque-wolf-negro.jpg',
+    localStock: 0,
+    importerStock: 0,
+    importerUnavailable: false,
+    matchConfidence: 1,
+    matchedVia: 'fuzzy',
+  }
+  const models = ['Wolf', 'Tekken Evo']
+
+  esperar('foto, precio y datos compatibles -> se puede sugerir', esSugerenciaDeCatalogoSegura(match, datos, models), true)
+  esperar(
+    'sin foto -> la revisa una persona',
+    esSugerenciaDeCatalogoSegura({ ...match, imageUrl: null }, datos, models),
+    false,
+  )
+  esperar(
+    'color contrario -> la revisa una persona',
+    esSugerenciaDeCatalogoSegura({ ...match, name: 'TANQUE WOLF ROJO IZQ' }, datos, models),
+    false,
+  )
+  esperar(
+    'lado contrario -> la revisa una persona',
+    esSugerenciaDeCatalogoSegura({ ...match, name: 'TANQUE WOLF NEGRO DER' }, datos, models),
+    false,
+  )
+  esperar(
+    'lado correcto pero posición contraria -> la revisa una persona',
+    esSugerenciaDeCatalogoSegura(
+      { ...match, name: 'TANQUE WOLF NEGRO IZQ POST' },
+      { ...datos, posicion: 'izquierdo delantero' },
+      models,
+    ),
+    false,
+  )
+  esperar(
+    'modelo contrario -> la revisa una persona',
+    esSugerenciaDeCatalogoSegura({ ...match, name: 'TANQUE TEKKEN EVO NEGRO IZQ' }, datos, models),
+    false,
+  )
+}
+
 function main(): void {
   console.log('Verificando la recepción (no se manda ningún mensaje ni se consulta nada).')
   verificarSaludos()
@@ -474,6 +552,7 @@ function main(): void {
   verificarRescate()
   verificarModelosDaytona()
   verificarEscalamientoInmediato()
+  verificarSugerenciasDeCatalogo()
 
   console.log('')
   if (fallos > 0) {

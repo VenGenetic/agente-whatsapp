@@ -52,15 +52,20 @@ const APERTURAS = [
   '¡{s}! Con gusto te ayudamos.',
 ]
 
-const PREGUNTAS = [
-  '¿Qué repuesto andas buscando?',
-  '¿Qué repuesto necesitas?',
-  'Cuéntame qué repuesto buscas y para qué moto, y te ayudo.',
-  '¿Qué pieza necesitas y para qué moto es?',
-  'Dime qué repuesto buscas y para qué modelo, y lo revisamos.',
-  '¿Qué estás buscando para tu moto?',
-  '¿En qué te puedo ayudar?',
+const PREGUNTAS_BASE = [
+  'Cuéntame qué repuesto buscas y la marca y modelo exacto de tu moto.',
+  'Para ayudarte de una, dime el repuesto y la marca y modelo exacto.',
+  '¿Qué pieza necesitas y para qué marca y modelo de moto es?',
+  'Dime qué repuesto buscas y el modelo exacto de tu moto, y te ayudo.',
+  'Envíame el repuesto que necesitas y la marca y modelo de la moto.',
+  '¿Qué estás buscando? Indícame también la marca y modelo exacto.',
 ]
+
+// Se pide desde el saludo para que un cliente que busca carrocería pueda
+// responder todo de una vez, sin esperar una segunda repregunta por color o
+// lado. Para piezas mecánicas simplemente ignora esa parte de la indicación.
+const DETALLE_CONDICIONAL = 'Si es plástico o carrocería, agrega la parte y el color; si es lateral, indica el lado.'
+const PREGUNTAS = PREGUNTAS_BASE.map((pregunta) => `${pregunta} ${DETALLE_CONDICIONAL}`)
 
 /**
  * Deja el texto comparable: sin tildes, sin mayúsculas, sin signos y con

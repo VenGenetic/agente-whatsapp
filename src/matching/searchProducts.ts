@@ -33,6 +33,11 @@ const CATALOG_ABBREVIATIONS: Array<[RegExp, string]> = [
 const CATALOG_SYNONYMS: Array<[RegExp, string]> = [
   [/\bRINES\b/gi, 'ARO'],
   [/\bRIN\b(?!\s*\d)/gi, 'ARO'],
+  // El catálogo abrevia los lados, mientras que el cliente normalmente
+  // los escribe completos. Reemplazar (en vez de sumar) conserva el boost
+  // de palabras completas de la consulta SQL.
+  [/\bIZQUIERD[AO]S?\b/gi, 'IZQ'],
+  [/\bDERECH[AO]S?\b/gi, 'DER'],
 ]
 
 /**

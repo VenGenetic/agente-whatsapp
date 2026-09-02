@@ -734,20 +734,22 @@ Gemini o mandar cualquier respuesta -- ni normal, ni escalamiento, ni
 fallback. Poner en `true` en `.env` recién cuando el negocio confirme que
 el bot está listo para ir en vivo.
 
-### Modo RECEPCIÓN (`AGENT_MODE=intake`) -- el bot no cotiza, solo junta datos
+### Modo RECEPCIÓN (`AGENT_MODE=intake`) -- junta datos y solo sugiere con certeza alta
 
-Pedido explícito del negocio tras la restricción de WhatsApp: el agente
-NO debe mandarle información del catálogo a nadie -- solo sacarle al
-cliente los datos de lo que necesita, para que después una persona
-cotice. Se implementó como un modo aparte (`src/agent/intake.ts`), NO
-como una modificación del flujo normal, para que ambos convivan sin
-pisarse:
+La recepción confirma primero repuesto y moto. Una vez cerrada la ficha,
+consulta el catálogo solo una vez y aplica una regla más exigente que la
+búsqueda interna: requiere foto y precio, el umbral
+`CATALOG_SUGGESTION_CONFIDENCE_THRESHOLD` (0,85 por defecto) y ninguna
+contradicción de modelo, color o posición. Los alias aprendidos, sinónimos
+y abreviaturas se aplican antes de esa decisión.
 
 - `AGENT_MODE=intake` (**default**): `processMessage` deriva a
-  `processIntakeMessage` y **nunca** llama a `findProductMatches` ni al
-  redactor normal -- es imposible por construcción que diga un precio o
-  un stock, no porque el prompt se lo pida sino porque no tiene acceso a
-  esos datos en ese camino de código.
+  `processIntakeMessage`. Si encuentra una coincidencia segura, manda una
+  sola foto con el precio como pie y no afirma stock. Si no la encuentra,
+  no tiene foto o falta precio, no menciona ningún producto al cliente.
+  En ambos casos asigna silenciosamente el chat a una persona para revisar
+  disponibilidad; por eso, si el cliente rechaza la foto, el bot no manda
+  alternativas ni vuelve a escribir.
 - `AGENT_MODE=full`: el flujo completo de siempre (busca en catálogo y
   cotiza), intacto.
 
@@ -758,9 +760,9 @@ pregunta corta para el dato que falte. Los 4 primeros son obligatorios
 (pedido del negocio); `color` es condicional -- el prompt le explica que
 piezas de carrocería (tanque, guardafango, mascarilla) suelen venir en
 varios colores y las mecánicas (filtro, bujía, cadena) no. Cuando
-`complete`, escala con el resumen formateado (`formatIntakeSummary`) en
-el mensaje al dueño, y el bot deja de contestar solo en esa conversación
-(mismo mecanismo de handoff de siempre).
+`complete`, cierra la ficha con el resumen y el resultado de catálogo
+para la persona que atiende. Después del posible envío, deja de contestar
+solo en esa conversación (mismo mecanismo de handoff de siempre).
 
 Verificado contra Gemini real, conversación completa turno por turno
 ("info por favor" -> tanque -> daytona -> wing evo -> 2022 -> negro ->

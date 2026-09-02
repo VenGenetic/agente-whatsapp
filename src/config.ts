@@ -14,6 +14,13 @@ function nivelDeRazonamiento(): string {
   return valor === 'off' ? '' : valor
 }
 
+/** Un valor mal configurado no debe volver permisiva una búsqueda. */
+function confidenceThreshold(name: string, fallback: number): number {
+  const value = Number(process.env[name] ?? fallback)
+  if (!Number.isFinite(value)) return fallback
+  return Math.min(1, Math.max(0, value))
+}
+
 export const config = {
   supabaseUrl: required('SUPABASE_URL'),
   supabaseServiceRoleKey: required('SUPABASE_SERVICE_ROLE_KEY'),
@@ -30,7 +37,11 @@ export const config = {
   ownerPhoneNumber: required('OWNER_PHONE_NUMBER'),
   // Debajo de este score de similitud (0-1), un match no cuenta como
   // "encontrado" -- se trata como que el producto no existe en catálogo.
-  matchConfidenceThreshold: Number(process.env.MATCH_CONFIDENCE_THRESHOLD ?? '0.3'),
+  matchConfidenceThreshold: confidenceThreshold('MATCH_CONFIDENCE_THRESHOLD', 0.3),
+  // La sugerencia que LLEGA al cliente exige bastante más certeza que una
+  // coincidencia interna para el vendedor. Si no se alcanza, la revisa una
+  // persona y el bot no ofrece una pieza por parecido.
+  catalogSuggestionConfidenceThreshold: confidenceThreshold('CATALOG_SUGGESTION_CONFIDENCE_THRESHOLD', 0.85),
   // Hora (0-23, horario de Ecuador) en la que se manda el resumen diario
   // de huecos (búsquedas sin resultado + escalamientos) al dueño.
   gapsReportHour: Number(process.env.GAPS_REPORT_HOUR ?? '8'),

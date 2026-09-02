@@ -3,6 +3,7 @@ import { config } from '../config.js'
 import { canonicalDaytonaModel, DAYTONA_MODELS, enforceDaytonaIntake, isDaytonaBrand, normalizeDaytonaText } from './daytonaModels.js'
 import type { HistoryTurn } from '../db/conversations.js'
 import { getLearnedDaytonaAliases, observeDaytonaModelAlias } from '../db/daytonaModelLearning.js'
+import { getReceptionKnowledge, normalizePartAlias, type ReceptionKnowledge } from '../db/requestKnowledge.js'
 import { generarContenido } from '../gemini/client.js'
 import {
   campoContaminado,
@@ -50,6 +51,8 @@ const GEMINI_ESPERA_ENTRE_INTENTOS_MS = 1500
  */
 export type IntakeData = {
   repuesto: string | null
+  /** Cómo llamó el cliente a la pieza; solo para aprendizaje interno. */
+  repuestoCliente: string | null
   marca: string | null
   modelo: string | null
   /** Modelo Daytona visualmente equivalente cuando la moto es de otra marca. */
@@ -77,8 +80,9 @@ export type IntakeResult = {
   /** true cuando ya no falta ningún dato obligatorio para esta pieza. */
   complete: boolean
   /**
-   * Qué preguntar ahora (una sola pregunta corta, redactada por el
-   * modelo). Null cuando `complete` es true.
+   * Un único mensaje al cliente que junta los datos pendientes. Puede
+   * pedir varios campos relacionados para evitar una pregunta por turno.
+   * Null cuando `complete` es true.
    */
   nextQuestion: string | null
   /** true si el cliente pide hablar con una persona, se queja, etc. */
@@ -89,6 +93,7 @@ const RESPONSE_SCHEMA: Schema = {
   type: Type.OBJECT,
   properties: {
     repuesto: { type: Type.STRING, nullable: true },
+    repuesto_cliente: { type: Type.STRING, nullable: true },
     marca: { type: Type.STRING, nullable: true },
     modelo: { type: Type.STRING, nullable: true },
     modelo_daytona_equivalente: { type: Type.STRING, nullable: true },
@@ -106,9 +111,20 @@ const RESPONSE_SCHEMA: Schema = {
   required: ['complete', 'needs_human', 'color_aplica', 'posicion_aplica'],
 }
 
-function buildIntakeSystemPrompt(learnedAliases: Map<string, string>): string {
+function buildIntakeSystemPrompt(learnedAliases: Map<string, string>, receptionKnowledge: ReceptionKnowledge): string {
   const modelsBlock = DAYTONA_MODELS.join(', ')
   const learnedBlock = [...learnedAliases].map(([alias, model]) => `${alias} = ${model}`).join(', ') || '(ninguno todavía)'
+  const trendsBlock = [
+    receptionKnowledge.commonModels.length > 0
+      ? `Modelos más nombrados en fichas recientes: ${receptionKnowledge.commonModels.map((item) => item.term).join(', ')}.`
+      : null,
+    receptionKnowledge.commonParts.length > 0
+      ? `Repuestos más nombrados en fichas recientes: ${receptionKnowledge.commonParts.map((item) => item.term).join(', ')}.`
+      : null,
+  ].filter(Boolean).join('\n') || '(sin tendencias calculadas todavía)'
+  const partAliasesBlock = [...receptionKnowledge.partAliases.entries()]
+    .map(([alias, part]) => `"${alias}" = "${part}"`)
+    .join(', ') || '(ninguno todavía)'
 
   return `
 Sos el módulo de RECEPCIÓN de ${config.businessName}, negocio de repuestos
@@ -125,7 +141,16 @@ seguís con la pregunta que falte.
 El negocio vende ÚNICAMENTE repuestos nuevos y originales. Nunca digas ni
 insinúes que son usados, de segunda mano, reciclados, genéricos o alternativos.
 
-## Datos que tenés que juntar (en este orden)
+## Datos que tenés que juntar sin hacer un interrogatorio
+
+Leé todo el mensaje y el historial, detectá TODOS los datos que faltan y
+pedilos JUNTOS en un solo campo "next_question". No hagas una pregunta por cada
+campo si el cliente puede responderlos en el mismo mensaje. Ejemplo: si dice
+"busco plásticos", todavía faltan modelo exacto, pieza concreta y color:
+pedí los tres a la vez. Solo preguntá un dato puntual cuando de verdad sea el
+único que falta o cuando ese dato decide qué otra cosa corresponde pedir.
+
+Los datos son:
 
 1. repuesto -- la pieza (ej. "filtro de aire", "tanque", "espejos").
    Obligatorio.
@@ -263,6 +288,23 @@ alternativas ni los reemplaces por parecido.
 
 Variantes de escritura aprendidas y confirmadas: ${learnedBlock}
 
+## Conocimiento aprendido de recepción
+
+${trendsBlock}
+
+Alias de repuestos confirmados: ${partAliasesBlock}
+
+Usá esta sección únicamente como vocabulario para entender lo que el cliente
+escribió. Las tendencias NO prueban que el cliente tenga ese modelo, que la
+pieza sea compatible, ni que haya stock. Nunca sugieras un modelo o repuesto
+solo porque aparece aquí.
+
+El campo "repuesto" debe ser el nombre corto y claro para el vendedor. En
+"repuesto_cliente" guardá la frase con que el cliente llamó a ESA pieza solo
+si es un apodo, error de escritura o descripción que difiere de \`repuesto\`;
+si ya la nombró claramente, usá null. Este campo es interno: jamás lo
+menciones en "next_question".
+
 ## Leé todo antes de preguntar
 
 El mensaje del cliente puede venir en VARIAS LÍNEAS: son mensajes
@@ -274,10 +316,11 @@ Leelas TODAS. Ejemplo real de lo que NO hay que hacer:
     (mal)  ¿Qué repuesto estás buscando para tu Tuko CR3 Max 200?
 
 Ya había dicho que busca un rin trasero. Lo correcto era repuesto = "rin
-trasero", marca = "Tuko", modelo = "CR3 Max 200", y preguntar el año, que
-era lo único que faltaba. Nada que el cliente ya dijo -- en este mensaje o
-en el historial -- se vuelve a preguntar. Si contesta algo ambiguo,
-repreguntá por ESE dato puntual.
+trasero", marca = "Tuko", modelo = "CR3 Max 200". Nada que el cliente ya
+dijo -- en este mensaje o en el historial -- se vuelve a preguntar. Si aún
+faltan varios datos aplicables, pedilos TODOS en el mismo mensaje; si
+contesta algo ambiguo y solo queda esa duda, entonces sí repreguntá por ESE
+dato.
 
 ## Cuando no se entiende qué pieza es
 
@@ -309,8 +352,13 @@ dirías vos, de mostrador.
 
 - Español de Ecuador, TUTEO ("tú", "tienes", "puedes"). Nunca "vos" ni
   "vosotros", nunca "estimado" ni formalismos de oficina.
-- UNA sola pregunta corta por vez, la del dato más importante que falte.
-  Dos líneas como máximo.
+- UN solo mensaje por turno, pero puede pedir TODOS los datos que falten.
+  Para tres o más datos, usá una lista corta o una frase con separadores,
+  no preguntas consecutivas. Tres líneas como máximo.
+- Como guía: cuando falten pieza + moto, pedí "repuesto, marca y modelo
+  exacto" juntos. Para carrocería/plásticos, sumá "pieza concreta y color";
+  para una pieza lateral, sumá "lado izquierdo o derecho (sentado en la
+  moto)". No preguntes color/lado cuando no aplican.
 - Variá el arranque. No empieces todos los mensajes igual ni repitas una
   frase que ya usaste en esta conversación: mirá el historial y decilo de
   otra forma.
@@ -332,9 +380,9 @@ es todo lo que hay que tener en la cabeza.
   cada mensaje suena a vendedor de seguros, y peor todavía si el nombre
   está mal. Si no te dieron ninguno, no inventes ni preguntes cómo se
   llama: eso lo maneja el equipo.
-- Preguntar tres cosas seguidas se siente como un trámite. A partir de la
-  tercera pregunta, decí para qué la necesitás en cinco palabras: "¿De qué
-  color o de qué lado es? Así no te damos la pieza equivocada".
+- No fragmentes una solicitud en varios turnos: pedí juntos los datos
+  pendientes que el cliente ya puede responder. Explicá brevemente para qué
+  solo si pedís color o lado: "así no te damos la pieza equivocada".
 - Si dice que no sabe algo, no lo dejes sintiéndose mal: "Tranquilo, con
   la foto lo resolvemos" y seguí. Es normalísimo no saber el año de una
   moto usada.
@@ -497,7 +545,10 @@ export async function runIntake(params: {
   /** Nota de voz -- se interpreta igual que si fuera texto. */
   audio?: { base64: string; mimeType: string }
 }): Promise<IntakeResult> {
-  const learnedAliases = await getLearnedDaytonaAliases()
+  const [learnedAliases, receptionKnowledge] = await Promise.all([
+    getLearnedDaytonaAliases(),
+    getReceptionKnowledge(),
+  ])
   const prompt = `${params.nombreCliente ? `El cliente se llama ${params.nombreCliente}.\n\n` : ''}HISTORIAL DE LA CONVERSACIÓN:
 ${formatHistory(params.history)}
 
@@ -525,7 +576,7 @@ ${formatHistory(params.history)}
             model: config.geminiModel,
             contents: [{ role: 'user', parts }],
             config: {
-              systemInstruction: buildIntakeSystemPrompt(learnedAliases),
+              systemInstruction: buildIntakeSystemPrompt(learnedAliases, receptionKnowledge),
               responseMimeType: 'application/json',
               responseSchema: RESPONSE_SCHEMA,
             },
@@ -541,6 +592,7 @@ ${formatHistory(params.history)}
         const sucios = [
           ...camposContaminados({
             repuesto: datos.repuesto,
+            repuesto_cliente: datos.repuesto_cliente,
             marca: datos.marca,
             modelo: datos.modelo,
             modelo_daytona_equivalente: datos.modelo_daytona_equivalente,
@@ -595,6 +647,13 @@ ${formatHistory(params.history)}
     parsed = rescatarLoLimpio(err.datos)
   }
 
+  // Un alias de repuesto solo se aplica cuando ya fue confirmado en dos
+  // fichas. Así el agente aprende vocabulario real sin convertir una
+  // interpretación aislada en una regla para todos los clientes.
+  const rawPart = typeof parsed.repuesto_cliente === 'string' ? parsed.repuesto_cliente.trim() : ''
+  const learnedPart = rawPart ? receptionKnowledge.partAliases.get(normalizePartAlias(rawPart)) : null
+  if (learnedPart) parsed.repuesto = learnedPart
+
   const rawModel = typeof parsed.modelo === 'string' ? parsed.modelo.trim() : ''
   const learnedCanonical = rawModel ? learnedAliases.get(normalizeDaytonaText(rawModel)) : null
   if (learnedCanonical && (!parsed.marca || isDaytonaBrand(parsed.marca))) parsed.modelo = learnedCanonical
@@ -611,6 +670,7 @@ ${formatHistory(params.history)}
   return {
     data: {
       repuesto: parsed.repuesto ?? null,
+      repuestoCliente: parsed.repuesto_cliente ?? null,
       marca: parsed.marca ?? null,
       modelo: parsed.modelo ?? null,
       modeloDaytonaEquivalente: parsed.modelo_daytona_equivalente ?? null,
@@ -662,6 +722,7 @@ export function rescatarLoLimpio(datos: Record<string, any>): Record<string, any
   return {
     ...datos,
     repuesto,
+    repuesto_cliente: limpio(datos.repuesto_cliente),
     modelo,
     modelo_daytona_equivalente: limpio(datos.modelo_daytona_equivalente),
     marca: limpio(datos.marca),

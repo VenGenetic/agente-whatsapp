@@ -150,18 +150,43 @@ export function daytonaModelQuestion(
   customerText: string,
   invalidModel?: string | null,
   cilindraje?: string | null,
+  data?: Record<string, unknown>,
 ): string {
+  const complemento = datosPendientesAlIdentificarModelo(data)
   if (/\b(no (?:se|sé|recuerdo|conozco)|ni idea|no sabria|no sabría)\b/i.test(customerText)) {
-    return `¿Será alguno de estos modelos Daytona: ${EXAMPLES.join(', ')}? Si ninguno te suena, envíame una foto de la moto o de su matrícula y te ayudamos a identificarla.`
+    return `¿Será alguno de estos modelos Daytona: ${EXAMPLES.join(', ')}?${complemento} Si ninguno te suena, envíame una foto de la moto o de su matrícula y te ayudamos a identificarla.`
   }
   // La cilindrada sola no alcanza, pero es un dato: se le reconoce y se
   // le pide lo que falta, en vez de preguntar el modelo de cero como si
   // no hubiera dicho nada.
   if (cilindraje) {
-    return `Anotado, una Daytona ${cilindraje}. En esa cilindrada hay varios modelos y cada uno lleva piezas distintas: ¿cuál es el tuyo? Por ejemplo ${EXAMPLES.slice(0, 4).join(', ')}. Si no lo tienes claro, mándame una foto de la moto o de la matrícula y te ayudo a ubicarlo.`
+    return `Anotado, una Daytona ${cilindraje}. En esa cilindrada hay varios modelos y cada uno lleva piezas distintas: ¿cuál es el tuyo? Por ejemplo ${EXAMPLES.slice(0, 4).join(', ')}.${complemento} Si no lo tienes claro, mándame una foto de la moto o de la matrícula y te ayudo a ubicarlo.`
   }
-  if (invalidModel) return `No pude identificar con seguridad “${invalidModel}”. ¿Será alguno de estos modelos Daytona: ${nearestModels(invalidModel).join(', ')}?`
-  return `¿Qué modelo Daytona tienes? Por ejemplo: ${EXAMPLES.slice(0, 4).join(', ')}. Si no lo sabes, dímelo y te muestro más opciones.`
+  if (invalidModel) return `No pude identificar con seguridad “${invalidModel}”. ¿Será alguno de estos modelos Daytona: ${nearestModels(invalidModel).join(', ')}?${complemento}`
+  return `¿Qué modelo Daytona tienes? Por ejemplo: ${EXAMPLES.slice(0, 4).join(', ')}.${complemento} Si no lo sabes, dímelo y te muestro más opciones.`
+}
+
+/** Los datos que se pueden pedir junto con una variante de modelo incierta. */
+function datosPendientesAlIdentificarModelo(data?: Record<string, unknown>): string {
+  if (!data) return ''
+
+  const pendiente: string[] = []
+  const repuesto = typeof data.repuesto === 'string' ? data.repuesto.trim() : ''
+  if (!repuesto) pendiente.push('qué repuesto buscas')
+  else if (/\b(pl[aá]sticos?|carrocer[ií]a)\b/i.test(repuesto)) pendiente.push('qué pieza concreta necesitas')
+
+  if (data.color_aplica === true && !(typeof data.color === 'string' && data.color.trim())) {
+    pendiente.push('el color')
+  }
+  if (data.posicion_aplica === true && !(typeof data.posicion === 'string' && data.posicion.trim())) {
+    pendiente.push('si es izquierdo o derecho, sentado en la moto')
+  }
+
+  if (pendiente.length === 0) return ''
+  const texto = pendiente.length === 1
+    ? pendiente[0]
+    : `${pendiente.slice(0, -1).join(', ')} y ${pendiente.at(-1)}`
+  return ` También indícame ${texto}.`
 }
 
 /**
@@ -193,12 +218,12 @@ function clienteDiceSharkSinVariante(texto: string): boolean {
   return /\bshark\b/.test(identidad) && !/\bshark\s*(?:1|i|2|ii|3|iii)\b/.test(identidad)
 }
 
-function preguntaShark(): string {
-  return '¿Cuál Shark tienes: Shark 1, Shark 2 o Shark 3?'
+function preguntaShark(data: Record<string, unknown>): string {
+  return `¿Cuál Shark tienes: Shark 1, Shark 2 o Shark 3?${datosPendientesAlIdentificarModelo(data)}`
 }
 
-function preguntaTekken(): string {
-  return '¿Cuál Tekken tienes: Tekken 250 (modelo anterior), Tekken Evo 250 o Tekken Discovery 300?'
+function preguntaTekken(data: Record<string, unknown>): string {
+  return `¿Cuál Tekken tienes: Tekken 250 (modelo anterior), Tekken Evo 250 o Tekken Discovery 300?${datosPendientesAlIdentificarModelo(data)}`
 }
 
 export function enforceDaytonaIntake(
@@ -229,13 +254,13 @@ export function enforceDaytonaIntake(
   if (!canonical && cilindrada) {
     return { ...data, marca: 'Daytona', modelo: null,
       cilindraje: data.cilindraje ?? cilindrada, complete: false,
-      next_question: preguntaConOpciones ?? daytonaModelQuestion(customerText, null, cilindrada) }
+      next_question: preguntaConOpciones ?? daytonaModelQuestion(customerText, null, cilindrada, data) }
   }
   if (!canonical && (esTekkenSinVariante(rawModel) || (!rawModel && clienteDiceTekkenSinVariante(customerText)))) {
-    return { ...data, marca: 'Daytona', modelo: null, complete: false, next_question: preguntaTekken() }
+    return { ...data, marca: 'Daytona', modelo: null, complete: false, next_question: preguntaTekken(data) }
   }
   if (!canonical && (clienteDiceSharkSinVariante(rawModel) || (!rawModel && clienteDiceSharkSinVariante(customerText)))) {
-    return { ...data, marca: 'Daytona', modelo: null, complete: false, next_question: preguntaShark() }
+    return { ...data, marca: 'Daytona', modelo: null, complete: false, next_question: preguntaShark(data) }
   }
   // Un modelo no conocido no se reemplaza por una sugerencia parecida ni se
   // le pregunta de nuevo al cliente si este ya lo escribió. El vendedor lo
@@ -246,10 +271,10 @@ export function enforceDaytonaIntake(
     return { ...data, marca: 'Daytona', modelo: rawModel, modelo_daytona_equivalente: null }
   }
   if (rawModel && !canonical) return { ...data, marca: 'Daytona', modelo: null, complete: false,
-    next_question: daytonaModelQuestion(customerText, rawModel) }
+    next_question: daytonaModelQuestion(customerText, rawModel, null, data) }
   if (!canonical) {
     return { ...data, marca: hasBrand ? 'Daytona' : data.marca ?? null, modelo: null,
-      complete: false, next_question: preguntaConOpciones ?? daytonaModelQuestion(customerText) }
+      complete: false, next_question: preguntaConOpciones ?? daytonaModelQuestion(customerText, null, null, data) }
   }
   return { ...data, marca: 'Daytona', modelo: canonical, modelo_daytona_equivalente: null }
 }
